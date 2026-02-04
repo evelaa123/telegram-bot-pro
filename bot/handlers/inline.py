@@ -1,0 +1,309 @@
+"""
+Inline mode handler.
+Handles inline queries for use in any chat.
+"""
+import hashlib
+from aiogram import Router
+from aiogram.types import (
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    ChosenInlineResult
+)
+
+from bot.services.ai_service import ai_service
+from bot.services.user_service import user_service
+from bot.services.limit_service import limit_service
+from bot.services.subscription_service import subscription_service
+from database.models import RequestType, RequestStatus
+from bot.bot import bot
+from config import settings
+import structlog
+
+logger = structlog.get_logger()
+router = Router()
+
+
+@router.inline_query()
+async def handle_inline_query(inline_query: InlineQuery):
+    """Handle inline queries."""
+    user = inline_query.from_user
+    query = inline_query.query.strip()
+    
+    logger.info(
+        "Inline query received",
+        user_id=user.id,
+        query=query[:50] if query else "(empty)"
+    )
+    
+    # Регистрируем пользователя
+    await user_service.get_or_create_user(
+        telegram_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        language_code=user.language_code
+    )
+    
+    # Проверяем подписку
+    is_subscribed = await subscription_service.check_subscription(bot, user.id)
+    
+    if not is_subscribed:
+        results = [
+            InlineQueryResultArticle(
+                id="subscription_required",
+                title="🔒 Требуется подписка",
+                description=f"Подпишитесь на {settings.telegram_channel_username}",
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        f"🔒 Для использования бота подпишитесь на канал "
+                        f"{settings.telegram_channel_username}"
+                    )
+                )
+            )
+        ]
+        await inline_query.answer(results, cache_time=60, is_personal=True)
+        return
+    
+    # Проверяем лимиты
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user.id, RequestType.TEXT
+    )
+    
+    if not has_limit:
+        results = [
+            InlineQueryResultArticle(
+                id="limit_reached",
+                title="⚠️ Лимит исчерпан",
+                description=f"Использовано {current}/{max_limit} запросов",
+                input_message_content=InputTextMessageContent(
+                    message_text="⚠️ Дневной лимит запросов исчерпан. Попробуйте завтра."
+                )
+            )
+        ]
+        await inline_query.answer(results, cache_time=60, is_personal=True)
+        return
+    
+    # Пустой запрос
+    if not query:
+        results = await get_help_results()
+        await inline_query.answer(results, cache_time=300, is_personal=True)
+        return
+    
+    # Обрабатываем запрос
+    if query.startswith("/image "):
+        prompt = query[7:].strip()
+        results = await handle_inline_image(prompt, user.id) if prompt else await get_help_results()
+    
+    elif query.startswith("/translate ") or query.startswith("/перевод "):
+        text = query.split(" ", 1)[1].strip() if " " in query else ""
+        results = await handle_inline_translate(text, user.id) if text else await get_help_results()
+    
+    else:
+        results = await handle_inline_text(query, user.id)
+    
+    await inline_query.answer(
+        results,
+        cache_time=0,
+        is_personal=True
+    )
+
+
+@router.chosen_inline_result()
+async def handle_chosen_inline_result(chosen_result: ChosenInlineResult):
+    """
+    Called when user selects an inline result.
+    Here we count the usage!
+    """
+    user = chosen_result.from_user
+    result_id = chosen_result.result_id
+    query = chosen_result.query
+    
+    logger.info(
+        "Inline result chosen",
+        user_id=user.id,
+        result_id=result_id,
+        query=query[:50] if query else None
+    )
+    
+    # Не считаем служебные результаты
+    if result_id in ("subscription_required", "limit_reached", "error", 
+                     "help_text", "help_image", "help_translate"):
+        return
+    
+    # Определяем тип
+    if result_id.startswith("translate_"):
+        request_type = RequestType.TEXT
+    elif result_id.startswith("image_"):
+        # Для image промптов тоже считаем как TEXT (картинка не генерируется в inline)
+        request_type = RequestType.TEXT
+    else:
+        request_type = RequestType.TEXT
+    
+    # Записываем использование
+    await limit_service.increment_usage(user.id, request_type)
+    
+    await limit_service.record_request(
+        telegram_id=user.id,
+        request_type=request_type,
+        prompt=query[:500] if query else "inline",
+        model="gpt-4o-mini",
+        status=RequestStatus.SUCCESS
+    )
+    
+    logger.info(
+        "Inline usage recorded",
+        user_id=user.id,
+        type=request_type.value
+    )
+
+
+async def get_help_results():
+    """Help results for empty query."""
+    return [
+        InlineQueryResultArticle(
+            id="help_text",
+            title="💬 Задать вопрос",
+            description="Просто напишите ваш вопрос",
+            input_message_content=InputTextMessageContent(
+                message_text="💡 Напишите: @bot ваш вопрос"
+            )
+        ),
+        InlineQueryResultArticle(
+            id="help_translate",
+            title="🌐 Перевести текст",
+            description="/translate текст или /перевод текст",
+            input_message_content=InputTextMessageContent(
+                message_text="💡 Напишите: @bot /translate hello world"
+            )
+        ),
+        InlineQueryResultArticle(
+            id="help_image",
+            title="🖼 Промпт для картинки",
+            description="/image описание картинки",
+            input_message_content=InputTextMessageContent(
+                message_text="💡 Напишите: @bot /image кот на луне"
+            )
+        )
+    ]
+
+
+async def handle_inline_text(query: str, user_id: int):
+    """Quick GPT response for inline."""
+    try:
+        language = await user_service.get_user_language(user_id)
+        
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Provide brief, concise answers (2-3 sentences max). "
+                    f"Respond in {'Russian' if language == 'ru' else 'the same language as the question'}."
+                )
+            },
+            {"role": "user", "content": query}
+        ]
+        
+        response, _ = await ai_service.generate_text(
+            messages=messages,
+            telegram_id=user_id,
+            max_tokens=256
+        )
+        
+        result_id = f"text_{hashlib.md5(f'{user_id}:{query}'.encode()).hexdigest()[:12]}"
+        
+        if len(response) > 4000:
+            response = response[:4000] + "..."
+        
+        return [
+            InlineQueryResultArticle(
+                id=result_id,
+                title="💬 Ответ",
+                description=response[:100] + ("..." if len(response) > 100 else ""),
+                input_message_content=InputTextMessageContent(
+                    message_text=f"❓ <b>{query}</b>\n\n💬 {response}",
+                    parse_mode="HTML"
+                )
+            )
+        ]
+        
+    except Exception as e:
+        logger.error("Inline text error", user_id=user_id, error=str(e))
+        return [
+            InlineQueryResultArticle(
+                id="error",
+                title="❌ Ошибка",
+                description=str(e)[:50],
+                input_message_content=InputTextMessageContent(
+                    message_text="❌ Ошибка обработки запроса."
+                )
+            )
+        ]
+
+
+async def handle_inline_translate(text: str, user_id: int):
+    """Quick translation."""
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Translate the text. Russian→English, English→Russian. "
+                    "Other languages→English. Only the translation, nothing else."
+                )
+            },
+            {"role": "user", "content": text}
+        ]
+        
+        translation, _ = await ai_service.generate_text(
+            messages=messages,
+            telegram_id=user_id,
+            max_tokens=512
+        )
+        
+        result_id = f"translate_{hashlib.md5(f'{user_id}:{text}'.encode()).hexdigest()[:12]}"
+        
+        return [
+            InlineQueryResultArticle(
+                id=result_id,
+                title="🌐 Перевод",
+                description=translation[:100] + ("..." if len(translation) > 100 else ""),
+                input_message_content=InputTextMessageContent(
+                    message_text=f"🌐 {translation}",
+                    parse_mode="HTML"
+                )
+            )
+        ]
+        
+    except Exception as e:
+        logger.error("Inline translate error", error=str(e))
+        return [
+            InlineQueryResultArticle(
+                id="error",
+                title="❌ Ошибка перевода",
+                description=str(e)[:50],
+                input_message_content=InputTextMessageContent(
+                    message_text="❌ Ошибка перевода."
+                )
+            )
+        ]
+
+
+async def handle_inline_image(prompt: str, user_id: int):
+    """Return formatted image prompt (generation too slow for inline)."""
+    result_id = f"image_{hashlib.md5(f'{user_id}:{prompt}'.encode()).hexdigest()[:12]}"
+    
+    return [
+        InlineQueryResultArticle(
+            id=result_id,
+            title=f"🖼 {prompt[:50]}{'...' if len(prompt) > 50 else ''}",
+            description="Нажмите чтобы отправить промпт",
+            input_message_content=InputTextMessageContent(
+                message_text=(
+                    f"🖼 <b>Промпт для генерации:</b>\n"
+                    f"<i>{prompt}</i>"
+                ),
+                parse_mode="HTML"
+            )
+        )
+    ]

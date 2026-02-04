@@ -1,0 +1,55 @@
+# Telegram Bot
+aiogram>=3.4.0
+aiohttp>=3.9.0
+
+# FastAPI & Web
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Database
+asyncpg>=0.29.0
+sqlalchemy[asyncio]>=2.0.25
+alembic>=1.13.0
+redis>=5.0.0
+aioredis>=2.0.1
+
+# Task Queue
+arq>=0.25.0
+
+# OpenAI
+openai>=1.12.0
+
+# Document Processing
+python-docx>=0.8.11
+openpyxl>=3.1.0
+python-pptx>=0.6.21
+PyPDF2>=3.0.0
+pdfplumber>=0.9.0
+Pillow>=10.0.0
+pdf2image>=1.16.3
+
+# Utils
+python-dotenv>=1.0.0
+httpx>=0.26.0
+tenacity>=8.2.0
+structlog>=24.1.0
+orjson>=3.9.0
+
+# Monitoring
+prometheus-client>=0.19.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+httpx>=0.26.0
+
+# Typing
+mypy>=1.8.0
+types-redis>=4.6.0
