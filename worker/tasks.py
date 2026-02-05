@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from database import async_session_maker
 from database.models import VideoTask, VideoTaskStatus, RequestType, RequestStatus
 from database.redis_client import redis_client
-from bot.services.openai_service import openai_service
+from bot.services.ai_service import ai_service
 from bot.services.limit_service import limit_service
 from bot.services.user_service import user_service
 from config import settings
@@ -186,11 +186,12 @@ async def process_video_generation(ctx, task_id: int):
             )
             await session.commit()
         
-        # Create video in OpenAI
-        video_info = await openai_service.create_video(
+        # Create video using AI service (CometAPI or OpenAI fallback)
+        video_info = await ai_service.create_video(
             prompt=task.prompt,
             model=task.model,
-            duration=task.duration_seconds
+            duration=task.duration_seconds,
+            telegram_id=telegram_id
         )
         
         video_id = video_info["video_id"]
@@ -218,14 +219,14 @@ async def process_video_generation(ctx, task_id: int):
             # Optionally update user message with progress
             # (would need to store message_id)
         
-        final_status = await openai_service.wait_for_video(
+        final_status = await ai_service.wait_for_video(
             video_id=video_id,
             poll_interval=settings.video_poll_interval,
             progress_callback=progress_callback
         )
         
         # Download video
-        video_bytes = await openai_service.download_video(video_id)
+        video_bytes = await ai_service.download_video(video_id)
         
         # Send to user via Telegram
         from aiogram import Bot
@@ -398,11 +399,21 @@ async def process_video_remix(
             )
             await session.commit()
         
-        # Create remix
-        remix_info = await openai_service.remix_video(
-            video_id=original_video_id,
-            change_prompt=change_prompt
-        )
+        # Create remix (note: remix may not be supported by CometAPI, using fallback)
+        # If ai_service doesn't have remix_video, this will need a fallback
+        if hasattr(ai_service, 'remix_video'):
+            remix_info = await ai_service.remix_video(
+                video_id=original_video_id,
+                change_prompt=change_prompt
+            )
+        else:
+            # Fallback: create new video with remix prompt
+            remix_info = await ai_service.create_video(
+                prompt=f"Based on previous video, apply changes: {change_prompt}",
+                model="sora-2",
+                duration=5,
+                telegram_id=telegram_id
+            )
         
         new_video_id = remix_info["video_id"]
         
@@ -416,10 +427,10 @@ async def process_video_remix(
             await session.commit()
         
         # Wait for completion
-        await openai_service.wait_for_video(new_video_id)
+        await ai_service.wait_for_video(new_video_id)
         
         # Download and send
-        video_bytes = await openai_service.download_video(new_video_id)
+        video_bytes = await ai_service.download_video(new_video_id)
         
         from aiogram import Bot
         from aiogram.types import BufferedInputFile

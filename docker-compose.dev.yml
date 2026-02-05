@@ -1,45 +1,30 @@
-# Docker Compose for local development on Windows
-# Use: docker-compose -f docker-compose.dev.yml up -d
-
 version: '3.8'
 
+# Development override - provides hot reload for frontend
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15-alpine
-    container_name: telegram_ai_postgres
+  # Admin Frontend - Development mode with hot reload
+  frontend:
+    build:
+      context: ./admin-frontend
+      dockerfile: Dockerfile.dev
+    image: telegram-bot-pro-frontend-dev:latest
+    container_name: telegram-bot-pro-frontend-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount source for hot reload
+      - ./admin-frontend/src:/app/src
+      - ./admin-frontend/public:/app/public
+      - ./admin-frontend/index.html:/app/index.html
+      - ./admin-frontend/vite.config.ts:/app/vite.config.ts
+      - ./admin-frontend/tsconfig.json:/app/tsconfig.json
+      # Don't mount node_modules - use container's installed modules
+      - /app/node_modules
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: telegram_ai_bot
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Redis
-  redis:
-    image: redis:7-alpine
-    container_name: telegram_ai_redis
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-  redis_data:
-
-networks:
-  default:
-    name: telegram_ai_network
+      - VITE_API_BASE_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - api
+    restart: unless-stopped

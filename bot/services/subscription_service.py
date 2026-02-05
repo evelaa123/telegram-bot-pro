@@ -346,6 +346,53 @@ class SubscriptionService:
             
             return True
     
+    async def refresh_subscription(self, bot, user_id: int) -> bool:
+        """
+        Force refresh subscription status by checking channel membership.
+        
+        Args:
+            bot: Telegram bot instance
+            user_id: Telegram user ID
+            
+        Returns:
+            True if user is subscribed to channel
+        """
+        channel_id = settings.telegram_channel_id or settings.telegram_channel_username
+        if not channel_id:
+            return True  # No channel configured, allow access
+        
+        return await self.check_channel_subscription(bot, user_id, channel_id)
+    
+    async def get_subscription_success_message(self, language: str = "ru") -> str:
+        """Get success message for subscription confirmation."""
+        if language == "ru":
+            return (
+                "✅ <b>Подписка подтверждена!</b>\n\n"
+                "Спасибо за подписку на наш канал!\n"
+                "Теперь вам доступны все функции бота."
+            )
+        else:
+            return (
+                "✅ <b>Subscription confirmed!</b>\n\n"
+                "Thank you for subscribing to our channel!\n"
+                "All bot features are now available to you."
+            )
+    
+    async def get_subscription_still_needed_message(self, language: str = "ru") -> str:
+        """Get message when subscription is still required."""
+        if language == "ru":
+            return (
+                "❌ <b>Подписка не обнаружена</b>\n\n"
+                "Пожалуйста, подпишитесь на канал и нажмите кнопку ещё раз.\n\n"
+                "Если вы уже подписались, подождите несколько секунд и попробуйте снова."
+            )
+        else:
+            return (
+                "❌ <b>Subscription not found</b>\n\n"
+                "Please subscribe to the channel and press the button again.\n\n"
+                "If you already subscribed, wait a few seconds and try again."
+            )
+    
     async def get_subscription_text(
         self,
         telegram_id: int,

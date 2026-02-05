@@ -37,8 +37,12 @@ async def handle_text_message(message: Message):
         "🎬 Видео", "🎬 Video",
         "📄 Документ", "📄 Document",
         "⚙️ Настройки", "⚙️ Settings",
-        "📊 Мои лимиты", "📊 My Limits",
+        "📊 Лимиты", "📊 Limits",  # Fixed: was "Мои лимиты"
+        "📊 Мои лимиты", "📊 My Limits",  # Keep old variants for compatibility
         "🔄 Новый диалог", "🔄 New Dialog",
+        "🎤 Голос", "🎤 Voice",  # Added missing buttons
+        "📊 Презентация", "📊 Presentation",
+        "🗓 Ассистент", "🗓 Assistant",
     }
     
     if text in menu_buttons:
@@ -182,7 +186,16 @@ async def handle_text_message(message: Message):
                     if len(display_text) > 4000:
                         display_text = display_text[:4000] + "..."
                     
-                    await thinking_message.edit_text(display_text)
+                    # Try with Markdown first, fall back to plain text
+                    try:
+                        await thinking_message.edit_text(
+                            display_text,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        # If Markdown fails, send as plain text
+                        await thinking_message.edit_text(display_text)
+                    
                     last_update_time = current_time
                     token_count = 0
                     
@@ -202,7 +215,15 @@ async def handle_text_message(message: Message):
                 if len(display_text) > 4000:
                     display_text = display_text[:4000] + "\n\n... (ответ обрезан)"
                 
-                await thinking_message.edit_text(display_text)
+                # Try with Markdown, fall back to plain text
+                try:
+                    await thinking_message.edit_text(
+                        display_text,
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    # If Markdown parsing fails, send as plain text
+                    await thinking_message.edit_text(display_text)
             except Exception:
                 pass
         

@@ -180,7 +180,7 @@ async def cmd_limits(message: Message):
 # Reply Keyboard Button Handlers
 # ============================================
 
-@router.message(F.text.in_({"📊 Мои лимиты", "📊 My Limits"}))
+@router.message(F.text.in_({"📊 Лимиты", "📊 Limits", "📊 Мои лимиты", "📊 My Limits"}))
 async def btn_limits(message: Message):
     """Handle limits button from Reply keyboard."""
     await cmd_limits(message)

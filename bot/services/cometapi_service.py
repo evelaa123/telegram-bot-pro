@@ -12,6 +12,7 @@ import aiohttp
 from openai import AsyncOpenAI
 
 from config import settings
+from bot.services.usage_tracking_service import usage_tracking_service
 import structlog
 
 logger = structlog.get_logger()
@@ -151,10 +152,35 @@ class CometAPIService:
             )
             usage["cost_usd"] = Decimal(str(round(cost, 6)))
             
+            # Log API usage for tracking
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="chat",
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    cost_usd=usage["cost_usd"],
+                    success=True
+                )
+            except Exception as log_error:
+                logger.warning("Failed to log API usage", error=str(log_error))
+            
             return content, usage
             
         except Exception as e:
             logger.error("CometAPI text generation error", error=str(e), model=model)
+            # Log failed call
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="chat",
+                    success=False,
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
             raise
     
     # =========================================
@@ -193,8 +219,22 @@ class CometAPIService:
                 n=1
             )
             
-            image_url = response.data[0].url
-            revised_prompt = response.data[0].revised_prompt
+            # Check if response contains data
+            if not response or not response.data or len(response.data) == 0:
+                raise Exception("No image data returned from API")
+            
+            image_data = response.data[0]
+            image_url = image_data.url
+            
+            if not image_url:
+                # Check for base64 data
+                if hasattr(image_data, 'b64_json') and image_data.b64_json:
+                    # Handle base64 response - will need to decode on download
+                    image_url = f"data:image/png;base64,{image_data.b64_json}"
+                else:
+                    raise Exception("No image URL or base64 data returned")
+            
+            revised_prompt = getattr(image_data, 'revised_prompt', prompt) or prompt
             
             # Calculate cost
             cost = self.PRICING["dall-e-3"].get(size, 0.04)
@@ -211,19 +251,52 @@ class CometAPIService:
                 "provider": "cometapi"
             }
             
+            # Log API usage
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="image",
+                    cost_usd=usage["cost_usd"],
+                    success=True
+                )
+            except Exception as log_error:
+                logger.warning("Failed to log API usage", error=str(log_error))
+            
             return image_url, usage
             
         except Exception as e:
             logger.error("CometAPI image generation error", error=str(e))
+            # Log failed call
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model or self.MODELS["image"],
+                    endpoint="image",
+                    success=False,
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
             raise
     
     async def download_image(self, url: str) -> bytes:
-        """Download image from URL."""
+        """Download image from URL or decode base64 data."""
+        # Check if it's base64 data URI
+        if url.startswith("data:image"):
+            # Extract base64 data after the comma
+            try:
+                base64_data = url.split(",", 1)[1]
+                return base64.b64decode(base64_data)
+            except Exception as e:
+                raise Exception(f"Failed to decode base64 image: {str(e)}")
+        
+        # Regular URL download
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as response:
                 if response.status == 200:
                     return await response.read()
-                raise Exception(f"Failed to download image: {response.status}")
+                raise Exception(f"Failed to download image: HTTP {response.status}")
     
     # =========================================
     # Video Generation
@@ -262,7 +335,7 @@ class CometAPIService:
                 seconds=sora_seconds
             )
             
-            return {
+            result = {
                 "video_id": video.id,
                 "status": video.status,
                 "model": model,
@@ -271,8 +344,37 @@ class CometAPIService:
                 "provider": "cometapi"
             }
             
+            # Calculate cost based on duration
+            pricing = self.PRICING.get(model, self.PRICING["sora-2"])
+            cost = pricing["per_second"] * int(sora_seconds)
+            
+            # Log API usage
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="video",
+                    cost_usd=Decimal(str(cost)),
+                    success=True
+                )
+            except Exception as log_error:
+                logger.warning("Failed to log API usage", error=str(log_error))
+            
+            return result
+            
         except Exception as e:
             logger.error("CometAPI video creation error", error=str(e))
+            # Log failed call
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="video",
+                    success=False,
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
             raise
     
     async def get_video_status(self, video_id: str) -> Dict[str, Any]:
@@ -384,10 +486,33 @@ class CometAPIService:
                 "provider": "cometapi"
             }
             
+            # Log API usage
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=self.MODELS["whisper"],
+                    endpoint="audio",
+                    cost_usd=usage["cost_usd"],
+                    success=True
+                )
+            except Exception as log_error:
+                logger.warning("Failed to log API usage", error=str(log_error))
+            
             return text, usage
             
         except Exception as e:
             logger.error("CometAPI transcription error", error=str(e))
+            # Log failed call
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=self.MODELS["whisper"],
+                    endpoint="audio",
+                    success=False,
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
             raise
     
     # =========================================

@@ -16,7 +16,6 @@ from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
 from bot.services.subscription_service import subscription_service
 from database.models import RequestType, RequestStatus
-from bot.bot import bot
 from config import settings
 import structlog
 
@@ -45,8 +44,9 @@ async def handle_inline_query(inline_query: InlineQuery):
         language_code=user.language_code
     )
     
-    # Проверяем подписку
-    is_subscribed = await subscription_service.check_subscription(bot, user.id)
+    # Проверяем подписку на канал (если включена проверка)
+    # check_subscription принимает только telegram_id
+    is_subscribed = await subscription_service.check_subscription(user.id)
     
     if not is_subscribed:
         results = [
