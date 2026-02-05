@@ -13,6 +13,8 @@ import {
   Row,
   Col,
   Alert,
+  Modal,
+  Space,
 } from 'antd';
 import { settingsApi } from '../services/api';
 
@@ -44,6 +46,8 @@ interface ApiSettings {
   max_context_messages: number;
   context_ttl_seconds: number;
   openai_timeout: number;
+  cometapi_base_url: string;
+  gigachat_base_url: string;
 }
 
 interface ApiKeysStatus {
@@ -61,7 +65,10 @@ function SettingsPage() {
   const [botForm] = Form.useForm();
   const [apiForm] = Form.useForm();
   const [apiKeysForm] = Form.useForm();
+  const [gigachatConvertForm] = Form.useForm();
   const [apiKeysStatus, setApiKeysStatus] = useState<ApiKeysStatus | null>(null);
+  const [gigachatModalOpen, setGigachatModalOpen] = useState(false);
+  const [converting, setConverting] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -155,6 +162,25 @@ function SettingsPage() {
       message.error(error.response?.data?.detail || 'Failed to save API keys');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleConvertGigachat = async (values: { client_id: string; client_secret: string }) => {
+    setConverting(true);
+    try {
+      const response = await settingsApi.convertGigachatCredentials(values.client_id, values.client_secret);
+      const base64Credentials = response.data.base64_credentials;
+      
+      // Auto-fill the credentials field
+      apiKeysForm.setFieldsValue({ gigachat_credentials: base64Credentials });
+      
+      message.success('Credentials converted! Click "Update API Keys" to save.');
+      setGigachatModalOpen(false);
+      gigachatConvertForm.resetFields();
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || 'Failed to convert credentials');
+    } finally {
+      setConverting(false);
     }
   };
 
@@ -373,10 +399,16 @@ function SettingsPage() {
                 label="GigaChat Credentials (Base64)"
                 extra="For presentation generation. Format: Base64(client_id:client_secret)"
               >
-                <Input.Password 
-                  placeholder="Base64 encoded credentials" 
-                  autoComplete="off"
-                />
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input.Password 
+                    placeholder="Base64 encoded credentials" 
+                    autoComplete="off"
+                    style={{ flex: 1 }}
+                  />
+                  <Button onClick={() => setGigachatModalOpen(true)}>
+                    Convert
+                  </Button>
+                </Space.Compact>
               </Form.Item>
               <Divider />
               <Form.Item
@@ -450,6 +482,21 @@ function SettingsPage() {
               >
                 <Input placeholder="GigaChat-2-Max" />
               </Form.Item>
+              <Divider orientation="left">Base URLs</Divider>
+              <Form.Item
+                name="cometapi_base_url"
+                label="CometAPI Base URL"
+                extra="Leave empty for default (https://api.cometapi.com/v1)"
+              >
+                <Input placeholder="https://api.cometapi.com/v1" />
+              </Form.Item>
+              <Form.Item
+                name="gigachat_base_url"
+                label="GigaChat Base URL"
+                extra="Leave empty for default (https://gigachat.devices.sberbank.ru/api/v1)"
+              >
+                <Input placeholder="https://gigachat.devices.sberbank.ru/api/v1" />
+              </Form.Item>
               <Divider />
               <Form.Item
                 name="max_context_messages"
@@ -506,6 +553,40 @@ function SettingsPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* GigaChat Credentials Converter Modal */}
+      <Modal
+        title="Convert GigaChat Credentials"
+        open={gigachatModalOpen}
+        onCancel={() => setGigachatModalOpen(false)}
+        onOk={() => gigachatConvertForm.submit()}
+        okText="Convert to Base64"
+        okButtonProps={{ loading: converting }}
+      >
+        <Alert
+          message="GigaChat Credentials Converter"
+          description="Enter your GigaChat client_id and client_secret from developers.sber.ru. They will be automatically converted to Base64 format."
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={gigachatConvertForm} layout="vertical" onFinish={handleConvertGigachat}>
+          <Form.Item
+            name="client_id"
+            label="Client ID"
+            rules={[{ required: true, message: 'Please enter Client ID' }]}
+          >
+            <Input placeholder="Your GigaChat Client ID" />
+          </Form.Item>
+          <Form.Item
+            name="client_secret"
+            label="Client Secret"
+            rules={[{ required: true, message: 'Please enter Client Secret' }]}
+          >
+            <Input.Password placeholder="Your GigaChat Client Secret" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

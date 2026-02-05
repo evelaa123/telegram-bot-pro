@@ -15,6 +15,7 @@ import {
   StopOutlined,
   CheckOutlined,
   EyeOutlined,
+  CrownOutlined,
 } from '@ant-design/icons';
 import { usersApi } from '../services/api';
 import dayjs from 'dayjs';
@@ -27,11 +28,16 @@ interface User {
   username: string | null;
   first_name: string | null;
   last_name: string | null;
+  language_code: string | null;
   is_blocked: boolean;
   custom_limits: object | null;
   created_at: string;
   last_active_at: string | null;
   total_requests: number;
+  // Subscription fields
+  subscription_type: string | null;
+  subscription_expires_at: string | null;
+  has_active_subscription: boolean;
 }
 
 function UsersPage() {
@@ -112,6 +118,19 @@ function UsersPage() {
       sorter: (a: User, b: User) => a.total_requests - b.total_requests,
     },
     {
+      title: 'Subscription',
+      key: 'subscription',
+      width: 120,
+      render: (_: unknown, record: User) =>
+        record.has_active_subscription ? (
+          <Tag color="gold" icon={<CrownOutlined />}>
+            {record.subscription_type?.toUpperCase() || 'PREMIUM'}
+          </Tag>
+        ) : (
+          <Tag>FREE</Tag>
+        ),
+    },
+    {
       title: 'Status',
       dataIndex: 'is_blocked',
       key: 'is_blocked',
@@ -123,7 +142,7 @@ function UsersPage() {
         ),
     },
     {
-      title: 'Custom Limits',
+      title: 'Limits',
       dataIndex: 'custom_limits',
       key: 'custom_limits',
       render: (limits: object | null) =>

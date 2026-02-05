@@ -15,6 +15,7 @@ import {
   InputNumber,
   Input,
   Spin,
+  Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -22,6 +23,7 @@ import {
   CheckOutlined,
   SendOutlined,
   SettingOutlined,
+  CrownOutlined,
 } from '@ant-design/icons';
 import { usersApi } from '../services/api';
 import dayjs from 'dayjs';
@@ -43,6 +45,10 @@ interface User {
   updated_at: string;
   last_active_at: string | null;
   total_requests: number;
+  // Subscription fields
+  subscription_type: string | null;
+  subscription_expires_at: string | null;
+  has_active_subscription: boolean;
 }
 
 interface UserRequest {
@@ -275,6 +281,22 @@ function UserDetailPage() {
               <Tag color="green">Active</Tag>
             )}
           </Descriptions.Item>
+          <Descriptions.Item label="Subscription">
+            {user.has_active_subscription ? (
+              <Space>
+                <Tag color="gold" icon={<CrownOutlined />}>
+                  {user.subscription_type?.toUpperCase() || 'PREMIUM'}
+                </Tag>
+                {user.subscription_expires_at && (
+                  <Text type="secondary">
+                    until {dayjs(user.subscription_expires_at).format('DD.MM.YYYY')}
+                  </Text>
+                )}
+              </Space>
+            ) : (
+              <Tag>FREE</Tag>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Total Requests">
             {user.total_requests}
           </Descriptions.Item>
@@ -288,10 +310,10 @@ function UserDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="Custom Limits" span={2}>
             {user.custom_limits ? (
-              <Space>
+              <Space wrap>
                 {Object.entries(user.custom_limits).map(([key, value]) => (
-                  <Tag key={key}>
-                    {key}: {value}
+                  <Tag key={key} color="blue">
+                    {key}: {value === -1 ? '∞' : value}
                   </Tag>
                 ))}
               </Space>
@@ -334,20 +356,27 @@ function UserDetailPage() {
         ]}
       >
         <Form form={limitsForm} onFinish={handleUpdateLimits} layout="vertical">
-          <Form.Item name="text" label="Text Requests (per day)">
-            <InputNumber min={0} style={{ width: '100%' }} />
+          <Alert
+            message="Set -1 for unlimited"
+            description="Use -1 to give this user unlimited requests for that type"
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+          <Form.Item name="text" label="Text Requests (per day)" extra="-1 = unlimited">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
-          <Form.Item name="image" label="Image Generations (per day)">
-            <InputNumber min={0} style={{ width: '100%' }} />
+          <Form.Item name="image" label="Image Generations (per day)" extra="-1 = unlimited">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
-          <Form.Item name="video" label="Video Generations (per day)">
-            <InputNumber min={0} style={{ width: '100%' }} />
+          <Form.Item name="video" label="Video Generations (per day)" extra="-1 = unlimited">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
-          <Form.Item name="voice" label="Voice Transcriptions (per day)">
-            <InputNumber min={0} style={{ width: '100%' }} />
+          <Form.Item name="voice" label="Voice Transcriptions (per day)" extra="-1 = unlimited">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
-          <Form.Item name="document" label="Document Processing (per day)">
-            <InputNumber min={0} style={{ width: '100%' }} />
+          <Form.Item name="document" label="Document Processing (per day)" extra="-1 = unlimited">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
         </Form>
       </Modal>

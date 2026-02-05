@@ -124,8 +124,19 @@ export const settingsApi = {
   updateApi: (settings: object) => api.put('/settings/api', settings),
   // API Keys management
   getApiKeysStatus: () => api.get('/settings/api-keys/status'),
-  updateApiKeys: (keys: { openai_api_key?: string; qwen_api_key?: string }) => 
-    api.put('/settings/api-keys', keys)
+  updateApiKeys: (keys: { cometapi_api_key?: string; gigachat_credentials?: string; openai_api_key?: string }) => 
+    api.put('/settings/api-keys', keys),
+  // GigaChat credentials conversion
+  convertGigachatCredentials: (clientId: string, clientSecret: string) =>
+    api.post('/settings/gigachat/convert-credentials', { client_id: clientId, client_secret: clientSecret })
+};
+
+export const supportApi = {
+  getConversations: () => api.get('/support/conversations'),
+  getConversation: (userId: number) => api.get(`/support/conversation/${userId}`),
+  sendMessage: (userId: number, message: string) => 
+    api.post('/support/send', { user_id: userId, message }),
+  getUnreadCount: () => api.get('/support/unread-count')
 };
 
 export const tasksApi = {

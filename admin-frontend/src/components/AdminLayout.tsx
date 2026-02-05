@@ -10,6 +10,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ApiOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/authStore';
 
@@ -35,6 +36,11 @@ function AdminLayout() {
       key: '/users',
       icon: <UserOutlined />,
       label: 'Users',
+    },
+    {
+      key: '/support',
+      icon: <MessageOutlined />,
+      label: 'Support',
     },
     {
       key: '/tasks',

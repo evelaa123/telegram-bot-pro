@@ -7,6 +7,7 @@ import UserDetailPage from './pages/UserDetailPage';
 import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 import ApiUsagePage from './pages/ApiUsagePage';
+import SupportPage from './pages/SupportPage';
 import AdminLayout from './components/AdminLayout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -30,6 +31,7 @@ function App() {
         <Route index element={<DashboardPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="users/:telegramId" element={<UserDetailPage />} />
+        <Route path="support" element={<SupportPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="api-usage" element={<ApiUsagePage />} />
         <Route path="settings" element={<SettingsPage />} />
