@@ -1,0 +1,575 @@
+"""
+CometAPI service for AI operations.
+Uses OpenAI-compatible API with CometAPI as provider.
+Supports Qwen-3-Max for text/image/video, Whisper for audio.
+"""
+import asyncio
+import io
+import base64
+from typing import Optional, AsyncGenerator, Dict, Any, List, Tuple
+from decimal import Decimal
+import aiohttp
+from openai import AsyncOpenAI
+
+from config import settings
+import structlog
+
+logger = structlog.get_logger()
+
+
+class CometAPIService:
+    """
+    Service for interacting with CometAPI.
+    Provides unified access to Qwen-3-Max, image generation, video generation, and Whisper.
+    """
+    
+    # CometAPI base URL
+    BASE_URL = "https://api.cometapi.com/v1"
+    
+    # Model names in CometAPI
+    MODELS = {
+        "text": "qwen-3-max",  # Qwen 3 Max for text generation
+        "image": "dall-e-3",   # DALL-E 3 through CometAPI
+        "video": "sora-2",     # Sora 2 through CometAPI
+        "whisper": "whisper-1",  # Whisper for speech recognition
+    }
+    
+    # Pricing estimates (per 1K tokens or per request)
+    PRICING = {
+        "qwen-3-max": {"input": 0.002, "output": 0.008},
+        "dall-e-3": {
+            "1024x1024": 0.04,
+            "1792x1024": 0.08,
+            "1024x1792": 0.08
+        },
+        "whisper-1": 0.006,  # per minute
+        "sora-2": {"per_second": 0.05},
+        "sora-2-pro": {"per_second": 0.10}
+    }
+    
+    def __init__(self):
+        self._client = None
+        self._api_key = None
+    
+    @property
+    def client(self) -> AsyncOpenAI:
+        """Get or create OpenAI client configured for CometAPI."""
+        api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
+        
+        # Recreate client if API key changed
+        if self._client is None or self._api_key != api_key:
+            self._api_key = api_key
+            self._client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=self.BASE_URL,
+                timeout=settings.openai_timeout
+            )
+        
+        return self._client
+    
+    def is_configured(self) -> bool:
+        """Check if CometAPI is configured."""
+        api_key = getattr(settings, 'cometapi_api_key', None)
+        return bool(api_key and len(api_key) > 10)
+    
+    # =========================================
+    # Text Generation (Qwen-3-Max)
+    # =========================================
+    
+    async def generate_text_stream(
+        self,
+        messages: List[Dict[str, str]],
+        model: str = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7
+    ) -> AsyncGenerator[Tuple[str, bool], None]:
+        """
+        Generate text with streaming response using Qwen-3-Max.
+        
+        Yields tuples of (text_chunk, is_complete).
+        """
+        model = model or self.MODELS["text"]
+        
+        try:
+            stream = await self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True
+            )
+            
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    is_complete = chunk.choices[0].finish_reason is not None
+                    yield content, is_complete
+                elif chunk.choices and chunk.choices[0].finish_reason:
+                    yield "", True
+                    
+        except Exception as e:
+            logger.error("CometAPI text streaming error", error=str(e), model=model)
+            raise
+    
+    async def generate_text(
+        self,
+        messages: List[Dict[str, str]],
+        model: str = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate text without streaming using Qwen-3-Max.
+        
+        Returns:
+            Tuple of (response_text, usage_info)
+        """
+        model = model or self.MODELS["text"]
+        
+        try:
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            
+            content = response.choices[0].message.content
+            usage = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+                "model": model,
+                "provider": "cometapi"
+            }
+            
+            # Calculate cost
+            pricing = self.PRICING.get(model, self.PRICING["qwen-3-max"])
+            cost = (
+                (usage["input_tokens"] / 1000) * pricing["input"] +
+                (usage["output_tokens"] / 1000) * pricing["output"]
+            )
+            usage["cost_usd"] = Decimal(str(round(cost, 6)))
+            
+            return content, usage
+            
+        except Exception as e:
+            logger.error("CometAPI text generation error", error=str(e), model=model)
+            raise
+    
+    # =========================================
+    # Image Generation
+    # =========================================
+    
+    async def generate_image(
+        self,
+        prompt: str,
+        size: str = "1024x1024",
+        style: str = "vivid",
+        quality: str = "standard",
+        model: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate image using DALL-E 3 through CometAPI.
+        
+        Args:
+            prompt: Image description
+            size: Image size (1024x1024, 1792x1024, 1024x1792)
+            style: Style (vivid, natural)
+            quality: Quality (standard, hd)
+            
+        Returns:
+            Tuple of (image_url, usage_info)
+        """
+        model = model or self.MODELS["image"]
+        
+        try:
+            response = await self.client.images.generate(
+                model=model,
+                prompt=prompt,
+                size=size,
+                style=style,
+                quality=quality,
+                n=1
+            )
+            
+            image_url = response.data[0].url
+            revised_prompt = response.data[0].revised_prompt
+            
+            # Calculate cost
+            cost = self.PRICING["dall-e-3"].get(size, 0.04)
+            if quality == "hd":
+                cost *= 2
+            
+            usage = {
+                "model": model,
+                "size": size,
+                "style": style,
+                "quality": quality,
+                "revised_prompt": revised_prompt,
+                "cost_usd": Decimal(str(cost)),
+                "provider": "cometapi"
+            }
+            
+            return image_url, usage
+            
+        except Exception as e:
+            logger.error("CometAPI image generation error", error=str(e))
+            raise
+    
+    async def download_image(self, url: str) -> bytes:
+        """Download image from URL."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    return await response.read()
+                raise Exception(f"Failed to download image: {response.status}")
+    
+    # =========================================
+    # Video Generation
+    # =========================================
+    
+    async def create_video(
+        self,
+        prompt: str,
+        model: str = "sora-2",
+        duration: int = 5,
+        size: str = "1280x720"
+    ) -> Dict[str, Any]:
+        """
+        Create video generation task.
+        
+        Args:
+            prompt: Video description
+            model: sora-2 or sora-2-pro
+            duration: Duration in seconds (4, 8, or 12)
+            size: Resolution
+            
+        Returns:
+            Video task info with video_id
+        """
+        try:
+            # Map duration to valid Sora values
+            duration_map = {
+                4: "4", 5: "4", 8: "8", 10: "8", 12: "12"
+            }
+            sora_seconds = duration_map.get(duration, "4")
+            
+            video = await self.client.videos.create(
+                model=model,
+                prompt=prompt,
+                size=size,
+                seconds=sora_seconds
+            )
+            
+            return {
+                "video_id": video.id,
+                "status": video.status,
+                "model": model,
+                "duration": int(sora_seconds),
+                "size": size,
+                "provider": "cometapi"
+            }
+            
+        except Exception as e:
+            logger.error("CometAPI video creation error", error=str(e))
+            raise
+    
+    async def get_video_status(self, video_id: str) -> Dict[str, Any]:
+        """Check video generation status."""
+        try:
+            video = await self.client.videos.retrieve(video_id)
+            
+            error_message = None
+            if hasattr(video, 'error') and video.error:
+                if isinstance(video.error, dict):
+                    error_message = video.error.get('message')
+                elif hasattr(video.error, 'message'):
+                    error_message = video.error.message
+            
+            return {
+                "video_id": video.id,
+                "status": video.status,
+                "progress": getattr(video, 'progress', 0),
+                "error_message": error_message
+            }
+            
+        except Exception as e:
+            logger.error("CometAPI video status error", error=str(e))
+            raise
+    
+    async def download_video(self, video_id: str) -> bytes:
+        """Download completed video."""
+        try:
+            response = await self.client.videos.download_content(video_id)
+            video_bytes = await response.read()
+            return video_bytes
+        except Exception as e:
+            logger.error("CometAPI video download error", error=str(e))
+            raise
+    
+    async def wait_for_video(
+        self,
+        video_id: str,
+        poll_interval: int = 10,
+        timeout: int = 600,
+        progress_callback=None
+    ) -> Dict[str, Any]:
+        """Wait for video generation to complete."""
+        elapsed = 0
+        
+        while elapsed < timeout:
+            status = await self.get_video_status(video_id)
+            
+            if progress_callback:
+                await progress_callback(status)
+            
+            if status["status"] == "completed":
+                return status
+            elif status["status"] == "failed":
+                raise Exception(
+                    f"Video generation failed: {status.get('error_message', 'Unknown error')}"
+                )
+            
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+        
+        raise Exception("Video generation timed out")
+    
+    # =========================================
+    # Speech Recognition (Whisper)
+    # =========================================
+    
+    async def transcribe_audio(
+        self,
+        audio_data: bytes,
+        filename: str = "audio.ogg",
+        language: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Transcribe audio to text using Whisper.
+        
+        Args:
+            audio_data: Audio file bytes
+            filename: Original filename for format detection
+            language: Optional language hint
+            
+        Returns:
+            Tuple of (transcribed_text, usage_info)
+        """
+        try:
+            # Create file-like object
+            audio_file = io.BytesIO(audio_data)
+            audio_file.name = filename
+            
+            kwargs = {
+                "model": self.MODELS["whisper"],
+                "file": audio_file,
+            }
+            if language:
+                kwargs["language"] = language
+            
+            response = await self.client.audio.transcriptions.create(**kwargs)
+            
+            text = response.text
+            
+            # Estimate duration for cost calculation
+            duration_minutes = len(audio_data) / (10 * 60 * 1000)
+            cost = duration_minutes * self.PRICING["whisper-1"]
+            
+            usage = {
+                "model": self.MODELS["whisper"],
+                "duration_minutes": round(duration_minutes, 2),
+                "cost_usd": Decimal(str(round(cost, 6))),
+                "provider": "cometapi"
+            }
+            
+            return text, usage
+            
+        except Exception as e:
+            logger.error("CometAPI transcription error", error=str(e))
+            raise
+    
+    # =========================================
+    # Vision (Image Analysis)
+    # =========================================
+    
+    async def analyze_image(
+        self,
+        image_url: str = None,
+        image_data: bytes = None,
+        prompt: str = "Describe this image in detail.",
+        model: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Analyze image using vision model.
+        
+        Returns:
+            Tuple of (analysis_text, usage_info)
+        """
+        model = model or self.MODELS["text"]  # Qwen-3-Max supports vision
+        
+        try:
+            content = [{"type": "text", "text": prompt}]
+            
+            if image_url:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                })
+            elif image_data:
+                base64_image = base64.b64encode(image_data).decode('utf-8')
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
+                    }
+                })
+            
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=4096
+            )
+            
+            text = response.choices[0].message.content
+            usage = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "model": model,
+                "provider": "cometapi",
+                "cost_usd": Decimal(str(round(
+                    (response.usage.prompt_tokens / 1000) * 0.002 +
+                    (response.usage.completion_tokens / 1000) * 0.008,
+                    6
+                )))
+            }
+            
+            return text, usage
+            
+        except Exception as e:
+            logger.error("CometAPI vision analysis error", error=str(e))
+            raise
+    
+    async def analyze_document_images(
+        self,
+        images: List[bytes],
+        prompt: str,
+        model: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Analyze multiple document page images."""
+        model = model or self.MODELS["text"]
+        
+        try:
+            content = [{"type": "text", "text": prompt}]
+            
+            for image_data in images:
+                base64_image = base64.b64encode(image_data).decode('utf-8')
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}",
+                        "detail": "high"
+                    }
+                })
+            
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=4096
+            )
+            
+            text = response.choices[0].message.content
+            usage = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "model": model,
+                "images_count": len(images),
+                "provider": "cometapi",
+                "cost_usd": Decimal(str(round(
+                    (response.usage.prompt_tokens / 1000) * 0.002 +
+                    (response.usage.completion_tokens / 1000) * 0.008,
+                    6
+                )))
+            }
+            
+            return text, usage
+            
+        except Exception as e:
+            logger.error("CometAPI document analysis error", error=str(e))
+            raise
+    
+    # =========================================
+    # Meeting Protocol Generation
+    # =========================================
+    
+    async def generate_meeting_protocol(
+        self,
+        transcription: str,
+        language: str = "ru"
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate meeting protocol from transcription.
+        
+        Args:
+            transcription: Transcribed audio text
+            language: Output language
+            
+        Returns:
+            Tuple of (protocol_text, usage_info)
+        """
+        if language == "ru":
+            system_prompt = """Ты — профессиональный секретарь, который создаёт протоколы совещаний.
+На основе транскрипции создай структурированный протокол совещания в следующем формате:
+
+# ПРОТОКОЛ СОВЕЩАНИЯ
+
+**Дата:** [если указана в тексте]
+**Участники:** [если упомянуты]
+
+## Повестка дня
+[Основные темы обсуждения]
+
+## Обсуждение
+[Краткое изложение ключевых моментов обсуждения]
+
+## Решения и поручения
+[Список принятых решений с ответственными лицами, если указаны]
+
+## Итоги
+[Краткие выводы]
+
+Если какая-то информация отсутствует в транскрипции, не придумывай её, а укажи [не указано]."""
+        else:
+            system_prompt = """You are a professional secretary who creates meeting protocols.
+Based on the transcription, create a structured meeting protocol in the following format:
+
+# MEETING PROTOCOL
+
+**Date:** [if mentioned in text]
+**Participants:** [if mentioned]
+
+## Agenda
+[Main discussion topics]
+
+## Discussion
+[Brief summary of key discussion points]
+
+## Decisions and Action Items
+[List of decisions with responsible persons if indicated]
+
+## Summary
+[Brief conclusions]
+
+If any information is missing from the transcription, don't make it up, indicate [not specified]."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Создай протокол на основе этой транскрипции:\n\n{transcription}"}
+        ]
+        
+        return await self.generate_text(messages, max_tokens=4096, temperature=0.3)
+
+
+# Global service instance
+cometapi_service = CometAPIService()

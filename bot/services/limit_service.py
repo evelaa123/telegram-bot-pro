@@ -26,7 +26,8 @@ class LimitService:
         RequestType.IMAGE: "image_count",
         RequestType.VIDEO: "video_count",
         RequestType.VOICE: "voice_count",
-        RequestType.DOCUMENT: "document_count"
+        RequestType.DOCUMENT: "document_count",
+        RequestType.PRESENTATION: "presentation_count"
     }
     
     async def get_user_limits(self, telegram_id: int) -> Dict[str, int]:
@@ -73,7 +74,8 @@ class LimitService:
                     "image": 0,
                     "video": 0,
                     "voice": 0,
-                    "document": 0
+                    "document": 0,
+                    "presentation": 0
                 }
             
             user_id = user_row[0]
@@ -94,7 +96,8 @@ class LimitService:
                     "image": 0,
                     "video": 0,
                     "voice": 0,
-                    "document": 0
+                    "document": 0,
+                    "presentation": 0
                 }
             
             return {
@@ -102,7 +105,8 @@ class LimitService:
                 "image": daily_limit.image_count,
                 "video": daily_limit.video_count,
                 "voice": daily_limit.voice_count,
-                "document": daily_limit.document_count
+                "document": daily_limit.document_count,
+                "presentation": getattr(daily_limit, 'presentation_count', 0)
             }
     
     async def get_remaining_limits(
@@ -194,7 +198,8 @@ class LimitService:
                 image_count=1 if request_type == RequestType.IMAGE else 0,
                 video_count=1 if request_type == RequestType.VIDEO else 0,
                 voice_count=1 if request_type == RequestType.VOICE else 0,
-                document_count=1 if request_type == RequestType.DOCUMENT else 0
+                document_count=1 if request_type == RequestType.DOCUMENT else 0,
+                presentation_count=1 if request_type == RequestType.PRESENTATION else 0
             )
             
             # On conflict, increment the specific counter
@@ -298,8 +303,10 @@ class LimitService:
                 f"🖼 Изображения: {remaining['image']}/{limits['image']}\n"
                 f"🎬 Видео: {remaining['video']}/{limits['video']}\n"
                 f"🎤 Голосовые: {remaining['voice']}/{limits['voice']}\n"
+                f"📊 Презентации: {remaining.get('presentation', 0)}/{limits.get('presentation', 3)}\n"
                 f"📄 Документы: {remaining['document']}/{limits['document']}\n\n"
-                f"🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м"
+                f"🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м\n\n"
+                "💳 Оформите подписку для безлимитного доступа!"
             )
         else:
             text = (
@@ -308,8 +315,10 @@ class LimitService:
                 f"🖼 Images: {remaining['image']}/{limits['image']}\n"
                 f"🎬 Videos: {remaining['video']}/{limits['video']}\n"
                 f"🎤 Voice: {remaining['voice']}/{limits['voice']}\n"
+                f"📊 Presentations: {remaining.get('presentation', 0)}/{limits.get('presentation', 3)}\n"
                 f"📄 Documents: {remaining['document']}/{limits['document']}\n\n"
-                f"🔄 Limits reset in: {hours_left}h {minutes_left}m"
+                f"🔄 Limits reset in: {hours_left}h {minutes_left}m\n\n"
+                "💳 Get subscription for unlimited access!"
             )
         
         return text
@@ -344,7 +353,8 @@ class LimitService:
                     image_count=0,
                     video_count=0,
                     voice_count=0,
-                    document_count=0
+                    document_count=0,
+                    presentation_count=0
                 )
             )
             await session.commit()

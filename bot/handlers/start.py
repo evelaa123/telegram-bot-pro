@@ -264,3 +264,37 @@ async def btn_document_mode(message: Message):
         )
     
     await message.answer(text)
+
+
+@router.message(F.text.in_({"🎤 Голос", "🎤 Voice"}))
+async def btn_voice_mode(message: Message):
+    """Handle voice mode button."""
+    user = message.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    if language == "ru":
+        text = (
+            "🎤 <b>Режим голосовых сообщений</b>\n\n"
+            "Отправьте голосовое сообщение или аудиофайл,\n"
+            "и я распознаю речь и создам текстовую транскрипцию.\n\n"
+            "📝 <b>Доступные функции:</b>\n"
+            "• Распознавание голосовых сообщений\n"
+            "• Транскрипция аудиофайлов (mp3, wav, ogg, m4a...)\n"
+            "• Создание протоколов совещаний\n\n"
+            "💡 В настройках можно включить авто-обработку —\n"
+            "распознанный текст автоматически отправится как запрос к ИИ."
+        )
+    else:
+        text = (
+            "🎤 <b>Voice Message Mode</b>\n\n"
+            "Send a voice message or audio file,\n"
+            "and I'll recognize the speech and create a transcription.\n\n"
+            "📝 <b>Available features:</b>\n"
+            "• Voice message recognition\n"
+            "• Audio file transcription (mp3, wav, ogg, m4a...)\n"
+            "• Meeting protocol creation\n\n"
+            "💡 In settings, you can enable auto-processing —\n"
+            "the transcribed text will be automatically sent as an AI request."
+        )
+    
+    await message.answer(text)

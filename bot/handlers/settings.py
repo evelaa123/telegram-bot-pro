@@ -1,21 +1,21 @@
 """
 Settings handler.
 Handles user preferences and configuration.
+Simplified - no model selection (fixed by TZ).
 """
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 
 from bot.services.user_service import user_service
+from bot.services.subscription_service import premium_service
 from bot.keyboards.main import get_settings_keyboard
 from bot.keyboards.inline import (
-    get_gpt_model_keyboard,
     get_image_style_keyboard,
     get_language_keyboard,
-    get_ai_provider_keyboard,
-    get_qwen_model_keyboard
 )
-from bot.services.qwen_service import qwen_service
 import structlog
 
 logger = structlog.get_logger()
@@ -34,11 +34,8 @@ async def show_settings(message: Message):
     user_settings = await user_service.get_user_settings(user.id)
     
     language = user_settings.get("language", "ru")
-    model = user_settings.get("gpt_model", "gpt-4o-mini")
     style = user_settings.get("image_style", "vivid")
     auto_voice = user_settings.get("auto_voice_process", False)
-    ai_provider = user_settings.get("ai_provider", "openai")
-    qwen_model = user_settings.get("qwen_model", "qwen-plus")
     
     if language == "ru":
         text = (
@@ -54,223 +51,164 @@ async def show_settings(message: Message):
     await message.answer(
         text,
         reply_markup=get_settings_keyboard(
-            current_model=model,
             current_style=style,
             auto_voice=auto_voice,
-            language=language,
-            ai_provider=ai_provider,
-            qwen_model=qwen_model
+            language=language
         )
-    )
-
-
-@router.callback_query(F.data == "settings:model")
-async def callback_settings_model(callback: CallbackQuery):
-    """Show GPT model selection."""
-    user = callback.from_user
-    user_settings = await user_service.get_user_settings(user.id)
-    
-    language = user_settings.get("language", "ru")
-    current_model = user_settings.get("gpt_model", "gpt-4o-mini")
-    
-    if language == "ru":
-        text = (
-            "🤖 <b>Выбор модели GPT</b>\n\n"
-            "<b>GPT-4o</b> — самая умная модель, лучше понимает контекст, "
-            "даёт более точные ответы. Медленнее.\n\n"
-            "<b>GPT-4o-mini</b> — быстрая и экономичная модель, "
-            "отлично справляется с большинством задач."
-        )
-    else:
-        text = (
-            "🤖 <b>Choose GPT Model</b>\n\n"
-            "<b>GPT-4o</b> — the smartest model, better context understanding, "
-            "more accurate responses. Slower.\n\n"
-            "<b>GPT-4o-mini</b> — fast and economical model, "
-            "handles most tasks excellently."
-        )
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_gpt_model_keyboard(current_model, language)
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("model:"))
-async def callback_select_model(callback: CallbackQuery):
-    """Handle model selection."""
-    user = callback.from_user
-    model = callback.data.split(":")[1]  # gpt-4o or gpt-4o-mini
-    
-    await user_service.update_user_settings(user.id, {"gpt_model": model})
-    
-    language = await user_service.get_user_language(user.id)
-    
-    if language == "ru":
-        model_name = "GPT-4o" if model == "gpt-4o" else "GPT-4o-mini"
-        await callback.answer(f"✅ Модель изменена на {model_name}", show_alert=True)
-    else:
-        model_name = "GPT-4o" if model == "gpt-4o" else "GPT-4o-mini"
-        await callback.answer(f"✅ Model changed to {model_name}", show_alert=True)
-    
-    # Update keyboard to show new selection
-    await callback.message.edit_reply_markup(
-        reply_markup=get_gpt_model_keyboard(model, language)
     )
 
 
 # =========================================
-# AI Provider Selection
+# Subscription Settings
 # =========================================
 
-@router.callback_query(F.data == "settings:provider")
-async def callback_settings_provider(callback: CallbackQuery):
-    """Show AI provider selection."""
+@router.callback_query(F.data == "settings:subscription")
+async def callback_settings_subscription(callback: CallbackQuery):
+    """Show subscription info and purchase options."""
     user = callback.from_user
-    user_settings = await user_service.get_user_settings(user.id)
-    
-    language = user_settings.get("language", "ru")
-    current_provider = user_settings.get("ai_provider", "openai")
-    qwen_available = qwen_service.is_configured()
-    
-    if language == "ru":
-        text = (
-            "🔌 <b>Выбор AI провайдера</b>\n\n"
-            "<b>OpenAI</b> — GPT-4o, DALL-E 3, Sora, Whisper. "
-            "Мощные модели, широкие возможности.\n\n"
-            "<b>Qwen</b> — модели от Alibaba Cloud. "
-            "Хорошее понимание китайского языка, экономичнее."
-        )
-        if not qwen_available:
-            text += "\n\n⚠️ <i>Qwen API не настроен администратором.</i>"
-    else:
-        text = (
-            "🔌 <b>Choose AI Provider</b>\n\n"
-            "<b>OpenAI</b> — GPT-4o, DALL-E 3, Sora, Whisper. "
-            "Powerful models, wide capabilities.\n\n"
-            "<b>Qwen</b> — models from Alibaba Cloud. "
-            "Good Chinese language understanding, more economical."
-        )
-        if not qwen_available:
-            text += "\n\n⚠️ <i>Qwen API is not configured by admin.</i>"
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_ai_provider_keyboard(current_provider, qwen_available, language)
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("provider:"))
-async def callback_select_provider(callback: CallbackQuery):
-    """Handle provider selection."""
-    user = callback.from_user
-    provider = callback.data.split(":")[1]
-    
     language = await user_service.get_user_language(user.id)
     
-    # Handle unavailable Qwen
-    if provider == "qwen_unavailable":
+    text = await premium_service.get_subscription_text(user.id, language)
+    
+    # Check if already premium
+    is_premium = await premium_service.check_premium(user.id)
+    
+    builder = InlineKeyboardBuilder()
+    
+    if not is_premium:
         if language == "ru":
-            await callback.answer(
-                "⚠️ Qwen API не настроен.\n"
-                "Обратитесь к администратору для настройки.",
-                show_alert=True
+            builder.row(
+                InlineKeyboardButton(
+                    text="💎 Оформить подписку",
+                    callback_data="subscription:buy:1"
+                )
             )
         else:
-            await callback.answer(
-                "⚠️ Qwen API is not configured.\n"
-                "Contact administrator to set it up.",
-                show_alert=True
+            builder.row(
+                InlineKeyboardButton(
+                    text="💎 Get Subscription",
+                    callback_data="subscription:buy:1"
+                )
             )
+    
+    back_text = "◀️ Назад" if language == "ru" else "◀️ Back"
+    builder.row(InlineKeyboardButton(text=back_text, callback_data="settings:back_to_settings"))
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subscription:buy:"))
+async def callback_buy_subscription(callback: CallbackQuery):
+    """Handle subscription purchase."""
+    user = callback.from_user
+    months = int(callback.data.split(":")[2])
+    language = await user_service.get_user_language(user.id)
+    
+    # Create payment
+    payment_url, payment_id = await premium_service.create_payment(user.id, months)
+    
+    if not payment_url:
+        if language == "ru":
+            await callback.answer("❌ Ошибка создания платежа. Попробуйте позже.", show_alert=True)
+        else:
+            await callback.answer("❌ Payment creation error. Try again later.", show_alert=True)
         return
     
-    # Update user settings
-    await user_service.update_user_settings(user.id, {"ai_provider": provider})
+    # Send payment link
+    builder = InlineKeyboardBuilder()
     
     if language == "ru":
-        provider_name = "OpenAI" if provider == "openai" else "Qwen"
-        await callback.answer(f"✅ Провайдер изменён на {provider_name}", show_alert=True)
+        builder.row(
+            InlineKeyboardButton(text="💳 Оплатить", url=payment_url)
+        )
+        text = (
+            "💳 <b>Оплата подписки</b>\n\n"
+            f"Сумма: {settings.premium_price_rub * months}₽\n"
+            f"Период: {months} мес.\n\n"
+            "Нажмите кнопку для перехода к оплате:"
+        )
     else:
-        provider_name = "OpenAI" if provider == "openai" else "Qwen"
-        await callback.answer(f"✅ Provider changed to {provider_name}", show_alert=True)
+        builder.row(
+            InlineKeyboardButton(text="💳 Pay", url=payment_url)
+        )
+        text = (
+            "💳 <b>Subscription Payment</b>\n\n"
+            f"Amount: {settings.premium_price_rub * months}₽\n"
+            f"Period: {months} month(s)\n\n"
+            "Click the button to proceed to payment:"
+        )
     
-    qwen_available = qwen_service.is_configured()
+    back_text = "◀️ Назад" if language == "ru" else "◀️ Back"
+    builder.row(InlineKeyboardButton(text=back_text, callback_data="settings:subscription"))
     
-    # Update keyboard to show new selection
-    await callback.message.edit_reply_markup(
-        reply_markup=get_ai_provider_keyboard(provider, qwen_available, language)
-    )
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
 
 
 # =========================================
-# Qwen Model Selection
+# Timezone Settings
 # =========================================
 
-@router.callback_query(F.data == "settings:qwen_model")
-async def callback_settings_qwen_model(callback: CallbackQuery):
-    """Show Qwen model selection."""
+@router.callback_query(F.data == "settings:timezone")
+async def callback_settings_timezone(callback: CallbackQuery):
+    """Show timezone selection."""
     user = callback.from_user
     user_settings = await user_service.get_user_settings(user.id)
     
     language = user_settings.get("language", "ru")
-    current_model = user_settings.get("qwen_model", "qwen-plus")
+    current_tz = user_settings.get("timezone", "Europe/Moscow")
+    
+    timezones = [
+        ("Europe/Moscow", "🇷🇺 Москва (UTC+3)"),
+        ("Europe/Kaliningrad", "🇷🇺 Калининград (UTC+2)"),
+        ("Asia/Yekaterinburg", "🇷🇺 Екатеринбург (UTC+5)"),
+        ("Asia/Novosibirsk", "🇷🇺 Новосибирск (UTC+7)"),
+        ("Asia/Vladivostok", "🇷🇺 Владивосток (UTC+10)"),
+        ("Europe/Kiev", "🇺🇦 Киев (UTC+2)"),
+        ("Europe/Minsk", "🇧🇾 Минск (UTC+3)"),
+    ]
     
     if language == "ru":
-        text = (
-            "🔮 <b>Выбор модели Qwen</b>\n\n"
-            "<b>Qwen Turbo</b> — быстрая и экономичная модель, "
-            "подходит для простых задач.\n\n"
-            "<b>Qwen Plus</b> — баланс между скоростью и качеством, "
-            "оптимальный выбор для большинства задач.\n\n"
-            "<b>Qwen Max</b> — самая умная модель, лучше понимает контекст, "
-            "подходит для сложных задач."
-        )
+        text = "🕐 <b>Выберите часовой пояс</b>\n\nТекущий: " + current_tz
     else:
-        text = (
-            "🔮 <b>Choose Qwen Model</b>\n\n"
-            "<b>Qwen Turbo</b> — fast and economical model, "
-            "suitable for simple tasks.\n\n"
-            "<b>Qwen Plus</b> — balance between speed and quality, "
-            "optimal choice for most tasks.\n\n"
-            "<b>Qwen Max</b> — smartest model, better context understanding, "
-            "suitable for complex tasks."
+        text = "🕐 <b>Select Timezone</b>\n\nCurrent: " + current_tz
+    
+    builder = InlineKeyboardBuilder()
+    
+    for tz_code, tz_name in timezones:
+        prefix = "✓ " if tz_code == current_tz else ""
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{prefix}{tz_name}",
+                callback_data=f"timezone:{tz_code}"
+            )
         )
     
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_qwen_model_keyboard(current_model, language)
-    )
+    back_text = "◀️ Назад" if language == "ru" else "◀️ Back"
+    builder.row(InlineKeyboardButton(text=back_text, callback_data="settings:back_to_settings"))
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("qwen_model:"))
-async def callback_select_qwen_model(callback: CallbackQuery):
-    """Handle Qwen model selection."""
+@router.callback_query(F.data.startswith("timezone:"))
+async def callback_select_timezone(callback: CallbackQuery):
+    """Handle timezone selection."""
     user = callback.from_user
-    model = callback.data.split(":")[1]  # qwen-turbo, qwen-plus, qwen-max
+    tz = callback.data.split(":")[1]
     
-    await user_service.update_user_settings(user.id, {"qwen_model": model})
+    await user_service.update_user_settings(user.id, {"timezone": tz})
     
     language = await user_service.get_user_language(user.id)
     
-    model_names = {
-        "qwen-turbo": "Qwen Turbo",
-        "qwen-plus": "Qwen Plus",
-        "qwen-max": "Qwen Max"
-    }
-    model_name = model_names.get(model, model)
-    
     if language == "ru":
-        await callback.answer(f"✅ Модель изменена на {model_name}", show_alert=True)
+        await callback.answer(f"✅ Часовой пояс изменён", show_alert=True)
     else:
-        await callback.answer(f"✅ Model changed to {model_name}", show_alert=True)
+        await callback.answer(f"✅ Timezone changed", show_alert=True)
     
-    # Update keyboard to show new selection
-    await callback.message.edit_reply_markup(
-        reply_markup=get_qwen_model_keyboard(model, language)
-    )
+    # Go back to settings
+    await callback_settings_timezone(callback)
 
 
 @router.callback_query(F.data == "settings:style")
@@ -372,7 +310,6 @@ async def callback_settings_voice(callback: CallbackQuery):
     user_settings = await user_service.get_user_settings(user.id)
     await callback.message.edit_reply_markup(
         reply_markup=get_settings_keyboard(
-            current_model=user_settings.get("gpt_model", "gpt-4o-mini"),
             current_style=user_settings.get("image_style", "vivid"),
             auto_voice=new_value,
             language=language
@@ -460,12 +397,9 @@ async def callback_back_to_settings(callback: CallbackQuery):
     await callback.message.edit_text(
         text,
         reply_markup=get_settings_keyboard(
-            current_model=user_settings.get("gpt_model", "gpt-4o-mini"),
             current_style=user_settings.get("image_style", "vivid"),
             auto_voice=user_settings.get("auto_voice_process", False),
-            language=language,
-            ai_provider=user_settings.get("ai_provider", "openai"),
-            qwen_model=user_settings.get("qwen_model", "qwen-plus")
+            language=language
         )
     )
     await callback.answer()

@@ -1,10 +1,12 @@
 """
-Unified AI service that routes requests to the appropriate provider (OpenAI or Qwen).
-Acts as a facade for AI operations, allowing seamless switching between providers.
+Unified AI service that routes requests to the appropriate provider.
+Uses CometAPI as the main provider (Qwen-3-Max, DALL-E, Sora, Whisper).
+GigaChat is used for presentations.
 """
 from typing import Optional, AsyncGenerator, Dict, Any, List, Tuple, Literal
 from decimal import Decimal
 
+from bot.services.cometapi_service import cometapi_service, CometAPIService
 from bot.services.openai_service import openai_service, OpenAIService
 from bot.services.qwen_service import qwen_service, QwenService, get_qwen_service
 from config import settings
@@ -12,17 +14,38 @@ import structlog
 
 logger = structlog.get_logger()
 
-AIProvider = Literal["openai", "qwen"]
+AIProvider = Literal["cometapi", "openai", "qwen"]
 
 
 class AIService:
     """
-    Unified AI service that routes to appropriate provider based on user settings.
-    Supports OpenAI and Qwen (Alibaba) providers.
+    Unified AI service that routes to CometAPI as main provider.
+    Fixed models per TZ:
+    - Text: Qwen-3-Max (via CometAPI)
+    - Images: DALL-E 3 (via CometAPI)
+    - Video: Sora 2 (via CometAPI)
+    - Voice: Whisper (via CometAPI)
+    - Presentations: GigaChat (direct)
     """
     
-    # Provider-specific model mappings
+    # Fixed models (no user selection)
+    MODELS = {
+        "text": "qwen-3-max",
+        "vision": "qwen-3-max",
+        "image": "dall-e-3",
+        "video": "sora-2",
+        "voice": "whisper-1",
+    }
+    
+    # Provider-specific model mappings (for backwards compatibility)
     PROVIDER_MODELS = {
+        "cometapi": {
+            "text": ["qwen-3-max"],
+            "vision": ["qwen-3-max"],
+            "image": ["dall-e-3"],
+            "video": ["sora-2", "sora-2-pro"],
+            "voice": ["whisper-1"],
+        },
         "openai": {
             "text": ["gpt-4o", "gpt-4o-mini"],
             "vision": ["gpt-4o"],
@@ -35,7 +58,7 @@ class AIService:
             "text": ["qwen-turbo", "qwen-plus", "qwen-max", "qwen-max-longcontext"],
             "vision": ["qwen-vl-plus", "qwen-vl-max"],
             "image": ["wanx-v1", "wanx2.1-t2i-turbo", "wanx2.1-t2i-plus"],
-            "video": [],  # Qwen doesn't have public video generation API yet
+            "video": [],
             "voice": ["paraformer-realtime-v2", "paraformer-v2"],
             "tts": ["cosyvoice-v1", "sambert-zhichu-v1"],
         }
@@ -43,6 +66,13 @@ class AIService:
     
     # Default models per provider
     DEFAULT_MODELS = {
+        "cometapi": {
+            "text": "qwen-3-max",
+            "vision": "qwen-3-max",
+            "image": "dall-e-3",
+            "video": "sora-2",
+            "voice": "whisper-1",
+        },
         "openai": {
             "text": "gpt-4o-mini",
             "vision": "gpt-4o",
@@ -59,6 +89,7 @@ class AIService:
     }
     
     def __init__(self):
+        self.cometapi = cometapi_service
         self.openai = openai_service
         self._qwen = None
     
@@ -73,13 +104,20 @@ class AIService:
         """Force refresh of Qwen service to reload API key."""
         self._qwen = QwenService()
     
+    def get_default_provider(self) -> AIProvider:
+        """Get the default AI provider."""
+        if self.cometapi.is_configured():
+            return "cometapi"
+        return "openai"
+    
     async def get_provider_for_user(
         self, 
         telegram_id: int, 
         task_type: str = "text"
     ) -> Tuple[AIProvider, str]:
         """
-        Get the appropriate provider and model for a user based on their settings.
+        Get the appropriate provider and model for a user.
+        Fixed models per TZ - no user selection.
         
         Args:
             telegram_id: User's Telegram ID
@@ -88,56 +126,22 @@ class AIService:
         Returns:
             Tuple of (provider_name, model_name)
         """
-        from bot.services.user_service import user_service
-        
-        user_settings = await user_service.get_user_settings(telegram_id)
-        
-        # Get user's preferred provider
-        provider = user_settings.get("ai_provider", "openai")
-        
-        # Get model based on provider and task
-        if provider == "qwen":
-            if task_type == "text":
-                model = user_settings.get("qwen_model", settings.default_qwen_model)
-            elif task_type == "vision":
-                model = user_settings.get("qwen_vl_model", settings.default_qwen_vl_model)
-            elif task_type == "image":
-                model = user_settings.get("qwen_image_model", settings.default_qwen_image_model)
-            elif task_type == "voice":
-                model = user_settings.get("qwen_asr_model", settings.default_qwen_asr_model)
-            else:
-                model = self.DEFAULT_MODELS["qwen"].get(task_type)
+        # Use CometAPI as main provider with fixed models
+        if self.cometapi.is_configured():
+            provider = "cometapi"
+            model = self.MODELS.get(task_type, self.DEFAULT_MODELS["cometapi"].get(task_type))
         else:
-            if task_type == "text":
-                model = user_settings.get("gpt_model", settings.default_gpt_model)
-            elif task_type == "image":
-                model = settings.default_image_model
-            elif task_type == "video":
-                model = settings.default_video_model
-            elif task_type == "voice":
-                model = settings.default_whisper_model
-            else:
-                model = self.DEFAULT_MODELS["openai"].get(task_type, "gpt-4o")
-        
-        # Check if provider is available for this task type
-        available_models = self.PROVIDER_MODELS.get(provider, {}).get(task_type, [])
-        
-        # Fallback to OpenAI if Qwen doesn't support this task
-        if provider == "qwen" and not available_models:
-            logger.info(f"Qwen doesn't support {task_type}, falling back to OpenAI")
+            # Fallback to OpenAI if CometAPI not configured
             provider = "openai"
-            model = self.DEFAULT_MODELS["openai"].get(task_type)
+            model = self.DEFAULT_MODELS["openai"].get(task_type, "gpt-4o-mini")
         
-        # Check if Qwen is configured
-        if provider == "qwen" and not self.qwen.is_configured():
-            logger.warning("Qwen API key not configured, falling back to OpenAI")
-            provider = "openai"
-            model = self.DEFAULT_MODELS["openai"].get(task_type, settings.default_gpt_model)
-        
+        logger.debug(f"Provider for {task_type}: {provider}/{model}")
         return provider, model
     
     def get_service(self, provider: AIProvider):
         """Get the service instance for a provider."""
+        if provider == "cometapi":
+            return self.cometapi
         if provider == "qwen":
             return self.qwen
         return self.openai
@@ -156,7 +160,7 @@ class AIService:
         temperature: float = 0.7
     ) -> AsyncGenerator[Tuple[str, bool], None]:
         """
-        Generate text with streaming, auto-selecting provider based on user settings.
+        Generate text with streaming, using CometAPI as main provider.
         
         Args:
             messages: List of message dicts with 'role' and 'content'
@@ -172,29 +176,22 @@ class AIService:
         if not provider and telegram_id:
             provider, model = await self.get_provider_for_user(telegram_id, "text")
         elif not provider:
-            provider = "openai"
+            provider = self.get_default_provider()
         
         if not model:
-            model = self.DEFAULT_MODELS[provider]["text"]
+            model = self.DEFAULT_MODELS.get(provider, self.DEFAULT_MODELS["cometapi"])["text"]
         
         logger.info(f"Text generation using {provider}/{model}")
         
-        if provider == "qwen":
-            async for chunk, is_complete in self.qwen.generate_text_stream(
-                messages=messages,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature
-            ):
-                yield chunk, is_complete
-        else:
-            async for chunk, is_complete in self.openai.generate_text_stream(
-                messages=messages,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature
-            ):
-                yield chunk, is_complete
+        service = self.get_service(provider)
+        
+        async for chunk, is_complete in service.generate_text_stream(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature
+        ):
+            yield chunk, is_complete
     
     async def generate_text(
         self,
@@ -214,27 +211,20 @@ class AIService:
         if not provider and telegram_id:
             provider, model = await self.get_provider_for_user(telegram_id, "text")
         elif not provider:
-            provider = "openai"
+            provider = self.get_default_provider()
         
         if not model:
-            model = self.DEFAULT_MODELS[provider]["text"]
+            model = self.DEFAULT_MODELS.get(provider, self.DEFAULT_MODELS["cometapi"])["text"]
         
         logger.info(f"Text generation using {provider}/{model}")
         
-        if provider == "qwen":
-            return await self.qwen.generate_text(
-                messages=messages,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-        else:
-            return await self.openai.generate_text(
-                messages=messages,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
+        service = self.get_service(provider)
+        return await service.generate_text(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
     
     # =========================================
     # Vision (Image Analysis)

@@ -29,7 +29,6 @@ async def handle_voice_message(message: Message):
     user_settings = await user_service.get_user_settings(user.id)
     language = user_settings.get("language", "ru")
     auto_process = user_settings.get("auto_voice_process", False)
-    ai_provider = user_settings.get("ai_provider", "openai")
     
     # Check file size (25MB limit)
     if voice.file_size and voice.file_size > 25 * 1024 * 1024:
@@ -66,18 +65,11 @@ async def handle_voice_message(message: Message):
     # Show typing indicator
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     
-    # Determine provider
-    actual_provider = ai_provider
-    if ai_provider == "qwen" and not ai_service.is_provider_available("qwen", "voice"):
-        actual_provider = "openai"
-    
     # Send progress message
     if language == "ru":
-        provider_name = "Qwen ASR" if actual_provider == "qwen" else "Whisper"
-        progress_msg = await message.answer(f"🎤 Распознаю речь ({provider_name})...")
+        progress_msg = await message.answer("🎤 Распознаю речь (Whisper)...")
     else:
-        provider_name = "Qwen ASR" if actual_provider == "qwen" else "Whisper"
-        progress_msg = await message.answer(f"🎤 Transcribing speech ({provider_name})...")
+        progress_msg = await message.answer("🎤 Transcribing speech (Whisper)...")
     
     try:
         # Download voice file

@@ -11,11 +11,13 @@ from sqlalchemy import select, func, cast, Date, and_
 from api.schemas.stats import (
     DashboardStats, StatsResponse, DailyStats, RequestStatsItem,
     TopUser, ChartData, RecentRequest, RecentRequestsResponse,
-    CostAnalysis
+    CostAnalysis, APIUsageOverview, APIUsageDailySummary, APIUsageMonthlySummary,
+    CostAlert, ProviderStats, ModelStats, DailyUsageData
 )
 from api.services.auth_service import get_current_admin
 from database import async_session_maker
-from database.models import User, Request, RequestType, VideoTask, VideoTaskStatus, Admin
+from database.models import User, Request, RequestType, VideoTask, VideoTaskStatus, Admin, APIUsageLog
+from bot.services.usage_tracking_service import usage_tracking_service
 import structlog
 
 logger = structlog.get_logger()
@@ -358,3 +360,112 @@ async def get_cost_analysis(
             daily_average_usd=daily_average,
             monthly_projection_usd=monthly_projection
         )
+
+
+@router.get("/api-usage", response_model=APIUsageOverview)
+async def get_api_usage_overview(
+    daily_budget_usd: float = Query(10.0, description="Daily budget in USD"),
+    monthly_budget_usd: float = Query(200.0, description="Monthly budget in USD"),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Get comprehensive API usage statistics for monitoring costs.
+    Includes daily and monthly summaries with alerts.
+    """
+    # Get daily summary
+    daily_data = await usage_tracking_service.get_daily_summary()
+    daily_summary = APIUsageDailySummary(
+        date=daily_data["date"],
+        total_requests=daily_data["total_requests"],
+        total_cost_usd=daily_data["total_cost_usd"],
+        total_cost_rub=daily_data["total_cost_rub"],
+        error_count=daily_data["error_count"],
+        error_rate=daily_data["error_rate"],
+        by_provider={
+            k: ProviderStats(**v) for k, v in daily_data["by_provider"].items()
+        },
+        by_model={
+            k: ModelStats(**v) for k, v in daily_data["by_model"].items()
+        }
+    )
+    
+    # Get monthly summary
+    monthly_data = await usage_tracking_service.get_monthly_summary()
+    monthly_summary = APIUsageMonthlySummary(
+        year=monthly_data["year"],
+        month=monthly_data["month"],
+        total_requests=monthly_data["total_requests"],
+        total_cost_usd=monthly_data["total_cost_usd"],
+        total_cost_rub=monthly_data["total_cost_rub"],
+        projected_monthly_usd=monthly_data["projected_monthly_usd"],
+        projected_monthly_rub=monthly_data["projected_monthly_rub"],
+        days_elapsed=monthly_data["days_elapsed"],
+        days_in_month=monthly_data["days_in_month"],
+        daily_data=[DailyUsageData(**d) for d in monthly_data["daily_data"]],
+        by_provider={
+            k: ModelStats(**v) for k, v in monthly_data["by_provider"].items()
+        }
+    )
+    
+    # Get alerts
+    alerts_data = await usage_tracking_service.get_cost_alerts(
+        daily_budget_usd=daily_budget_usd,
+        monthly_budget_usd=monthly_budget_usd
+    )
+    alerts = [CostAlert(**a) for a in alerts_data]
+    
+    return APIUsageOverview(
+        daily=daily_summary,
+        monthly=monthly_summary,
+        alerts=alerts
+    )
+
+
+@router.get("/api-usage/daily")
+async def get_api_usage_daily(
+    target_date: date = Query(default=None, description="Date to get stats for (default: today)"),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Get daily API usage breakdown.
+    """
+    return await usage_tracking_service.get_daily_summary(target_date)
+
+
+@router.get("/api-usage/monthly")
+async def get_api_usage_monthly(
+    year: int = Query(default=None, description="Year (default: current)"),
+    month: int = Query(default=None, ge=1, le=12, description="Month (default: current)"),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Get monthly API usage summary.
+    """
+    return await usage_tracking_service.get_monthly_summary(year, month)
+
+
+@router.get("/api-usage/alerts")
+async def get_api_usage_alerts(
+    daily_budget_usd: float = Query(10.0, description="Daily budget in USD"),
+    monthly_budget_usd: float = Query(200.0, description="Monthly budget in USD"),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Get cost alerts based on configured budgets.
+    """
+    return await usage_tracking_service.get_cost_alerts(
+        daily_budget_usd=daily_budget_usd,
+        monthly_budget_usd=monthly_budget_usd
+    )
+
+
+@router.get("/api-usage/user/{user_id}")
+async def get_api_usage_by_user(
+    user_id: int,
+    days: int = Query(30, ge=1, le=365, description="Number of days to look back"),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Get API usage for a specific user.
+    """
+    return await usage_tracking_service.get_usage_by_user(user_id, days)
