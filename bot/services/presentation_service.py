@@ -1,6 +1,7 @@
 """
 Presentation generation service.
-Creates PPTX files using GigaChat for content and CometAPI for images.
+Creates PPTX files using GigaChat for content and images.
+Falls back to CometAPI for images if GigaChat fails.
 """
 import io
 import asyncio
@@ -142,20 +143,34 @@ class PresentationService:
                         "progress": progress
                     })
                 
-                # Generate image for slide if needed
+                # Generate image for slide if needed (using GigaChat)
                 image_bytes = None
                 if include_images and slide_data.get("image_prompt") and i > 0 and i < len(slides_data) - 1:
                     try:
-                        image_url, image_usage = await self.cometapi.generate_image(
-                            prompt=slide_data["image_prompt"],
-                            size="1024x1024",
-                            style="natural"
+                        # Use GigaChat for image generation (more reliable for Russian content)
+                        image_id, image_usage = await self.gigachat.generate_image_prompt(
+                            description=slide_data["image_prompt"]
                         )
-                        image_bytes = await self.cometapi.download_image(image_url)
-                        total_usage["images_generated"] += 1
-                        total_usage["total_cost_usd"] += image_usage.get("cost_usd", Decimal("0"))
+                        if image_id:
+                            image_bytes = await self.gigachat.download_image(image_id)
+                            total_usage["images_generated"] += 1
+                            # GigaChat returns cost_rub, convert to approximate USD
+                            if "cost_rub" in image_usage:
+                                total_usage["total_cost_usd"] += image_usage["cost_rub"] / Decimal("90")
                     except Exception as e:
-                        logger.warning("Failed to generate image for slide", slide=i, error=str(e))
+                        logger.warning("Failed to generate image for slide via GigaChat", slide=i, error=str(e))
+                        # Fallback: try CometAPI if GigaChat fails
+                        try:
+                            image_url, image_usage = await self.cometapi.generate_image(
+                                prompt=slide_data["image_prompt"],
+                                size="1024x1024",
+                                style="natural"
+                            )
+                            image_bytes = await self.cometapi.download_image(image_url)
+                            total_usage["images_generated"] += 1
+                            total_usage["total_cost_usd"] += image_usage.get("cost_usd", Decimal("0"))
+                        except Exception as fallback_error:
+                            logger.warning("Fallback CometAPI also failed", slide=i, error=str(fallback_error))
                 
                 # Create slide
                 self._create_slide(
@@ -459,13 +474,25 @@ class PresentationService:
         for i, slide_data in enumerate(slides_data):
             image_bytes = None
             if include_images and slide_data.get("image_prompt") and i > 0 and i < len(slides_data) - 1:
+                # Try GigaChat first
                 try:
-                    image_url, img_usage = await self.cometapi.generate_image(slide_data["image_prompt"])
-                    image_bytes = await self.cometapi.download_image(image_url)
-                    total_usage["images_generated"] += 1
-                    total_usage["total_cost_usd"] += img_usage.get("cost_usd", Decimal("0"))
-                except:
-                    pass
+                    image_id, img_usage = await self.gigachat.generate_image_prompt(
+                        description=slide_data["image_prompt"]
+                    )
+                    if image_id:
+                        image_bytes = await self.gigachat.download_image(image_id)
+                        total_usage["images_generated"] += 1
+                        if "cost_rub" in img_usage:
+                            total_usage["total_cost_usd"] += img_usage["cost_rub"] / Decimal("90")
+                except Exception:
+                    # Fallback to CometAPI
+                    try:
+                        image_url, img_usage = await self.cometapi.generate_image(slide_data["image_prompt"])
+                        image_bytes = await self.cometapi.download_image(image_url)
+                        total_usage["images_generated"] += 1
+                        total_usage["total_cost_usd"] += img_usage.get("cost_usd", Decimal("0"))
+                    except Exception:
+                        pass
             
             self._create_slide(prs, slide_data, colors, image_bytes, i == 0, i == len(slides_data) - 1)
         
