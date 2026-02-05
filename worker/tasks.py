@@ -1,16 +1,16 @@
 """
-Async task definitions for video generation.
+Async task definitions for video generation and scheduled reminders.
 Uses arq for task queue management.
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
-from arq import create_pool
+from arq import create_pool, cron
 from arq.connections import RedisSettings, ArqRedis
-from sqlalchemy import select, update
+from sqlalchemy import select, update, and_
 
 from database import async_session_maker
-from database.models import VideoTask, VideoTaskStatus, RequestType, RequestStatus
+from database.models import VideoTask, VideoTaskStatus, RequestType, RequestStatus, Reminder, ReminderType, User
 from database.redis_client import redis_client
 from bot.services.ai_service import ai_service
 from bot.services.limit_service import limit_service
@@ -537,13 +537,143 @@ async def process_video_remix(
         await bot.session.close()
 
 
+# ============================================
+# Reminder/Alarm Scheduler
+# ============================================
+
+async def check_reminders(ctx):
+    """
+    Check for due reminders and alarms and send notifications.
+    This runs every minute via cron.
+    """
+    logger.debug("Checking for due reminders...")
+    
+    now = datetime.now(timezone.utc)
+    # Check reminders due in the next minute
+    check_until = now + timedelta(minutes=1)
+    
+    async with async_session_maker() as session:
+        # Get all active reminders that are due
+        result = await session.execute(
+            select(Reminder, User)
+            .join(User, Reminder.user_id == User.id)
+            .where(and_(
+                Reminder.is_active == True,
+                Reminder.is_sent == False,
+                Reminder.remind_at <= check_until
+            ))
+        )
+        
+        reminders = result.all()
+        
+        if not reminders:
+            return
+        
+        logger.info(f"Found {len(reminders)} due reminders")
+        
+        from aiogram import Bot
+        bot = Bot(token=settings.telegram_bot_token)
+        
+        for reminder, user in reminders:
+            try:
+                # Get user language
+                user_lang = user.settings.get("language", "ru") if user.settings else "ru"
+                
+                # Format message based on reminder type
+                if reminder.type == ReminderType.ALARM:
+                    if user_lang == "ru":
+                        text = (
+                            f"⏰ <b>Будильник!</b>\n\n"
+                            f"🔔 {reminder.title}"
+                        )
+                    else:
+                        text = (
+                            f"⏰ <b>Alarm!</b>\n\n"
+                            f"🔔 {reminder.title}"
+                        )
+                elif reminder.type == ReminderType.CHANNEL_EVENT:
+                    if user_lang == "ru":
+                        text = (
+                            f"🔔 <b>Напоминание о событии!</b>\n\n"
+                            f"📌 {reminder.title}"
+                        )
+                        if reminder.description:
+                            text += f"\n\n{reminder.description}"
+                    else:
+                        text = (
+                            f"🔔 <b>Event Reminder!</b>\n\n"
+                            f"📌 {reminder.title}"
+                        )
+                        if reminder.description:
+                            text += f"\n\n{reminder.description}"
+                else:
+                    if user_lang == "ru":
+                        text = f"🔔 <b>Напоминание:</b>\n\n{reminder.title}"
+                    else:
+                        text = f"🔔 <b>Reminder:</b>\n\n{reminder.title}"
+                
+                # Send notification
+                await bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=text,
+                    parse_mode="HTML"
+                )
+                
+                logger.info(
+                    "Reminder sent",
+                    reminder_id=reminder.id,
+                    user_id=user.telegram_id,
+                    type=reminder.type.value
+                )
+                
+                # Update reminder status
+                if reminder.recurrence == "daily":
+                    # For daily alarms, reschedule for next day
+                    next_time = reminder.remind_at + timedelta(days=1)
+                    await session.execute(
+                        update(Reminder)
+                        .where(Reminder.id == reminder.id)
+                        .values(
+                            remind_at=next_time,
+                            last_triggered_at=now
+                        )
+                    )
+                else:
+                    # One-time reminder, mark as sent
+                    await session.execute(
+                        update(Reminder)
+                        .where(Reminder.id == reminder.id)
+                        .values(
+                            is_sent=True,
+                            last_triggered_at=now
+                        )
+                    )
+                
+                await session.commit()
+                
+            except Exception as e:
+                logger.error(
+                    "Failed to send reminder",
+                    reminder_id=reminder.id,
+                    error=str(e)
+                )
+        
+        await bot.session.close()
+
+
 # Worker class for arq
 class WorkerSettings:
     """arq worker settings."""
     
     functions = [
         process_video_generation,
-        process_video_remix
+        process_video_remix,
+        check_reminders
+    ]
+    
+    # Cron jobs - check reminders every minute
+    cron_jobs = [
+        cron(check_reminders, minute={0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59})
     ]
     
     redis_settings = get_redis_settings()
@@ -554,7 +684,7 @@ class WorkerSettings:
     @staticmethod
     async def on_startup(ctx):
         """Worker startup hook."""
-        logger.info("Worker started")
+        logger.info("Worker started with reminder scheduler")
         await redis_client.connect()
     
     @staticmethod

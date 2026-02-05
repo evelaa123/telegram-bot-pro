@@ -32,21 +32,24 @@ const { TextArea } = Input;
 
 interface Conversation {
   user_id: number;
-  telegram_id: number;
+  user_telegram_id: number;
   username: string | null;
   first_name: string | null;
-  last_name: string | null;
   last_message: string;
   last_message_at: string;
   unread_count: number;
+  has_subscription: boolean;
 }
 
 interface Message {
   id: number;
   user_id: number;
+  user_telegram_id: number;
+  username: string | null;
+  first_name: string | null;
   message: string;
-  from_admin: boolean;
-  admin_id: number | null;
+  is_from_user: boolean;
+  admin_username: string | null;
   is_read: boolean;
   created_at: string;
 }
@@ -97,7 +100,8 @@ function SupportPage() {
     setMessagesLoading(true);
     try {
       const response = await supportApi.getConversation(userId);
-      setMessages(response.data.messages);
+      // API returns array directly, not object with messages field
+      setMessages(response.data || []);
     } catch (error) {
       console.error('Failed to fetch messages:', error);
       message.error('Failed to load messages');
@@ -128,10 +132,8 @@ function SupportPage() {
 
   const getUserDisplayName = (conv: Conversation) => {
     if (conv.username) return `@${conv.username}`;
-    if (conv.first_name || conv.last_name) {
-      return [conv.first_name, conv.last_name].filter(Boolean).join(' ');
-    }
-    return `User ${conv.telegram_id}`;
+    if (conv.first_name) return conv.first_name;
+    return `User ${conv.user_telegram_id}`;
   };
 
   const selectedConversation = conversations.find(c => c.user_id === selectedUserId);
@@ -228,7 +230,7 @@ function SupportPage() {
                   <Text strong>{selectedConversation && getUserDisplayName(selectedConversation)}</Text>
                   <br />
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    Telegram ID: {selectedConversation?.telegram_id}
+                    Telegram ID: {selectedConversation?.user_telegram_id}
                   </Text>
                 </div>
               </div>
@@ -254,20 +256,20 @@ function SupportPage() {
                       key={msg.id}
                       style={{
                         display: 'flex',
-                        justifyContent: msg.from_admin ? 'flex-end' : 'flex-start',
+                        justifyContent: !msg.is_from_user ? 'flex-end' : 'flex-start',
                       }}
                     >
                       <Card
                         size="small"
                         style={{
                           maxWidth: '70%',
-                          background: msg.from_admin ? '#1890ff' : '#fff',
+                          background: !msg.is_from_user ? '#1890ff' : '#fff',
                           borderRadius: 12,
-                          border: msg.from_admin ? 'none' : '1px solid #f0f0f0',
+                          border: !msg.is_from_user ? 'none' : '1px solid #f0f0f0',
                         }}
                         bodyStyle={{ padding: '8px 12px' }}
                       >
-                        <Text style={{ color: msg.from_admin ? '#fff' : '#000', whiteSpace: 'pre-wrap' }}>
+                        <Text style={{ color: !msg.is_from_user ? '#fff' : '#000', whiteSpace: 'pre-wrap' }}>
                           {msg.message}
                         </Text>
                         <br />
@@ -275,11 +277,11 @@ function SupportPage() {
                           type="secondary" 
                           style={{ 
                             fontSize: 10, 
-                            color: msg.from_admin ? 'rgba(255,255,255,0.7)' : undefined 
+                            color: !msg.is_from_user ? 'rgba(255,255,255,0.7)' : undefined 
                           }}
                         >
                           {dayjs(msg.created_at).format('HH:mm')}
-                          {msg.from_admin && ' · Admin'}
+                          {!msg.is_from_user && msg.admin_username && ` · ${msg.admin_username}`}
                         </Text>
                       </Card>
                     </div>
