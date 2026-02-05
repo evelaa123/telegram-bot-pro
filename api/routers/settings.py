@@ -39,16 +39,24 @@ DEFAULT_SETTINGS = {
         "channel_username": app_settings.telegram_channel_username,
     },
     "api": {
-        "default_gpt_model": app_settings.default_gpt_model,
-        "default_image_model": app_settings.default_image_model,
-        "default_video_model": app_settings.default_video_model,
-        "default_qwen_model": app_settings.default_qwen_model,
+        # Model settings - configurable by admin
+        "default_text_model": getattr(app_settings, 'default_text_model', 'qwen3-max-2026-01-23'),
+        "default_image_model": getattr(app_settings, 'default_image_model', 'dall-e-3'),
+        "default_video_model": getattr(app_settings, 'default_video_model', 'sora-2'),
+        "default_voice_model": getattr(app_settings, 'default_whisper_model', 'whisper-1'),
+        "default_gigachat_model": getattr(app_settings, 'default_gigachat_model', 'GigaChat-2-Max'),
         "default_ai_provider": app_settings.default_ai_provider,
+        # Context settings
         "max_context_messages": app_settings.max_context_messages,
         "context_ttl_seconds": app_settings.context_ttl_seconds,
         "openai_timeout": app_settings.openai_timeout,
+        # Legacy fields for compatibility
+        "default_gpt_model": getattr(app_settings, 'default_text_model', 'qwen3-max-2026-01-23'),
+        "default_qwen_model": getattr(app_settings, 'default_text_model', 'qwen3-max-2026-01-23'),
     },
     "api_keys": {
+        "cometapi_api_key": None,
+        "gigachat_credentials": None,
         "openai_api_key": None,
         "qwen_api_key": None,
     }
@@ -238,7 +246,13 @@ async def update_api_keys(
     """
     Update API keys configuration.
     
-    NOTE: This updates the .env file and requires a server restart to take effect.
+    Supports:
+    - CometAPI key (primary provider)
+    - GigaChat credentials (for presentations)
+    - OpenAI key (fallback)
+    - Qwen key (legacy)
+    
+    NOTE: This updates the .env file. Changes take effect after server restart.
     Only superadmin can modify API keys.
     """
     import os
@@ -252,34 +266,80 @@ async def update_api_keys(
             with open(env_path, 'r') as f:
                 env_lines = f.readlines()
         
-        # Update or add API keys
-        openai_updated = False
-        qwen_updated = False
+        # Track which keys were updated
+        updates = {
+            "cometapi": False,
+            "gigachat": False,
+            "openai": False,
+            "qwen": False
+        }
+        
         new_lines = []
         
         for line in env_lines:
             stripped = line.strip()
             
-            if stripped.startswith("OPENAI_API_KEY=") and api_keys.openai_api_key is not None:
+            # CometAPI
+            if stripped.startswith("COMETAPI_API_KEY=") and api_keys.cometapi_api_key is not None:
+                new_lines.append(f"COMETAPI_API_KEY={api_keys.cometapi_api_key}\n")
+                updates["cometapi"] = True
+            # GigaChat
+            elif stripped.startswith("GIGACHAT_CREDENTIALS=") and api_keys.gigachat_credentials is not None:
+                new_lines.append(f"GIGACHAT_CREDENTIALS={api_keys.gigachat_credentials}\n")
+                updates["gigachat"] = True
+            # OpenAI
+            elif stripped.startswith("OPENAI_API_KEY=") and api_keys.openai_api_key is not None:
                 new_lines.append(f"OPENAI_API_KEY={api_keys.openai_api_key}\n")
-                openai_updated = True
+                updates["openai"] = True
+            # Qwen
             elif stripped.startswith("QWEN_API_KEY=") and api_keys.qwen_api_key is not None:
                 new_lines.append(f"QWEN_API_KEY={api_keys.qwen_api_key}\n")
-                qwen_updated = True
+                updates["qwen"] = True
             else:
                 new_lines.append(line)
         
         # Add keys if not found in file
-        if api_keys.openai_api_key is not None and not openai_updated:
-            # Find position after OpenAI section comment or at the end
+        if api_keys.cometapi_api_key is not None and not updates["cometapi"]:
+            # Add CometAPI key
+            insert_pos = len(new_lines)
+            for i, line in enumerate(new_lines):
+                if "# AI Providers" in line or "# CometAPI" in line:
+                    insert_pos = i + 1
+                    break
+            
+            cometapi_section = any("COMETAPI" in line for line in new_lines)
+            if not cometapi_section:
+                new_lines.insert(insert_pos, "\n# CometAPI (Primary Provider)\n")
+                insert_pos += 1
+            new_lines.insert(insert_pos, f"COMETAPI_API_KEY={api_keys.cometapi_api_key}\n")
+            updates["cometapi"] = True
+        
+        if api_keys.gigachat_credentials is not None and not updates["gigachat"]:
+            # Add GigaChat credentials
+            insert_pos = len(new_lines)
+            for i, line in enumerate(new_lines):
+                if "COMETAPI_API_KEY=" in line:
+                    insert_pos = i + 1
+                    break
+            
+            gigachat_section = any("GIGACHAT" in line for line in new_lines)
+            if not gigachat_section:
+                new_lines.insert(insert_pos, "\n# GigaChat (Presentations)\n")
+                insert_pos += 1
+            new_lines.insert(insert_pos, f"GIGACHAT_CREDENTIALS={api_keys.gigachat_credentials}\n")
+            updates["gigachat"] = True
+        
+        if api_keys.openai_api_key is not None and not updates["openai"]:
+            # Find position after CometAPI/GigaChat section
             insert_pos = len(new_lines)
             for i, line in enumerate(new_lines):
                 if "# OpenAI" in line:
                     insert_pos = i + 1
                     break
             new_lines.insert(insert_pos, f"OPENAI_API_KEY={api_keys.openai_api_key}\n")
+            updates["openai"] = True
         
-        if api_keys.qwen_api_key is not None and not qwen_updated:
+        if api_keys.qwen_api_key is not None and not updates["qwen"]:
             # Add after OPENAI_API_KEY or at the end
             insert_pos = len(new_lines)
             for i, line in enumerate(new_lines):
@@ -294,6 +354,22 @@ async def update_api_keys(
                 insert_pos += 1
             
             new_lines.insert(insert_pos, f"QWEN_API_KEY={api_keys.qwen_api_key}\n")
+            updates["qwen"] = True
+        
+        # Check if any keys were provided
+        any_updates = any([
+            api_keys.cometapi_api_key,
+            api_keys.gigachat_credentials,
+            api_keys.openai_api_key,
+            api_keys.qwen_api_key
+        ])
+        
+        if not any_updates:
+            return {
+                "success": False,
+                "message": "No API keys provided to update.",
+                "updates": updates
+            }
         
         # Write updated .env file
         with open(env_path, 'w') as f:
@@ -302,15 +378,13 @@ async def update_api_keys(
         logger.info(
             "API keys updated in .env file",
             admin=current_admin.username,
-            openai_updated=api_keys.openai_api_key is not None,
-            qwen_updated=api_keys.qwen_api_key is not None
+            updates=updates
         )
         
         return {
             "success": True,
             "message": "API keys updated. Server restart required for changes to take effect.",
-            "openai_updated": api_keys.openai_api_key is not None,
-            "qwen_updated": api_keys.qwen_api_key is not None
+            "updates": updates
         }
         
     except Exception as e:

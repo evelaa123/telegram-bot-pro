@@ -25,24 +25,34 @@ class BotSettings(BaseModel):
 class ApiSettings(BaseModel):
     """
     API configuration settings.
-    Note: AI models are now fixed (not configurable by admin):
-    - Text: qwen-3-max via CometAPI
+    Admin can configure models via CometAPI dashboard.
+    Default models:
+    - Text: qwen3-max-2026-01-23 via CometAPI
     - Image: dall-e-3 via CometAPI
     - Video: sora-2 via CometAPI
     - Voice: whisper-1 via CometAPI
-    - Presentations: GigaChat (direct API)
+    - Presentations: GigaChat-2-Max (direct API)
     """
-    # Legacy fields - kept for compatibility but not used
-    default_gpt_model: str = "qwen-3-max"
-    default_image_model: str = "dall-e-3"
-    default_video_model: str = "sora-2"
-    default_qwen_model: str = "qwen-3-max"
+    # Model settings - configurable by admin
+    default_text_model: str = Field("qwen3-max-2026-01-23", description="Text generation model (via CometAPI)")
+    default_image_model: str = Field("dall-e-3", description="Image generation model (via CometAPI)")
+    default_video_model: str = Field("sora-2", description="Video generation model (via CometAPI)")
+    default_voice_model: str = Field("whisper-1", description="Speech recognition model (via CometAPI)")
+    default_gigachat_model: str = Field("GigaChat-2-Max", description="GigaChat model for presentations")
+    
+    # Provider settings
     default_ai_provider: Literal["openai", "qwen", "cometapi"] = "cometapi"
     
-    # Active settings
-    max_context_messages: int = 20
-    context_ttl_seconds: int = 1800
-    openai_timeout: int = 120
+    # Context settings
+    max_context_messages: int = Field(20, ge=1, le=100, description="Max messages in context")
+    context_ttl_seconds: int = Field(1800, ge=60, description="Context TTL in seconds")
+    
+    # Timeouts
+    openai_timeout: int = Field(120, ge=30, le=600, description="API timeout in seconds")
+    
+    # Legacy fields for compatibility
+    default_gpt_model: str = "qwen3-max-2026-01-23"
+    default_qwen_model: str = "qwen3-max-2026-01-23"
 
 
 class ApiKeysSettings(BaseModel):

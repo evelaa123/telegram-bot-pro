@@ -20,27 +20,33 @@ class AIService:
     """
     Unified AI service that routes ALL requests to CometAPI.
     
-    Fixed models (no user selection):
-    - Text: qwen3-max-2026-01-23 (via CometAPI)
-    - Vision: qwen3-max-2026-01-23 (via CometAPI)
-    - Images: dall-e-3 (via CometAPI)
-    - Video: sora-2 (via CometAPI)
-    - Voice: whisper-1 (via CometAPI)
+    Models are configurable via admin panel:
+    - Text: default qwen3-max-2026-01-23 (via CometAPI)
+    - Vision: default qwen3-max-2026-01-23 (via CometAPI)
+    - Images: default dall-e-3 (via CometAPI)
+    - Video: default sora-2 (via CometAPI)
+    - Voice: default whisper-1 (via CometAPI)
     - Presentations: GigaChat (direct API, separate)
     """
-    
-    # Fixed models - no user selection
-    MODELS = {
-        "text": "qwen3-max-2026-01-23",
-        "vision": "qwen3-max-2026-01-23",
-        "image": "dall-e-3",
-        "video": "sora-2",
-        "voice": "whisper-1",
-    }
     
     def __init__(self):
         self.cometapi = cometapi_service
         self.openai = openai_service  # Fallback only
+    
+    def get_models(self) -> Dict[str, str]:
+        """Get current model configuration from settings."""
+        return {
+            "text": getattr(settings, 'default_text_model', 'qwen3-max-2026-01-23'),
+            "vision": getattr(settings, 'default_text_model', 'qwen3-max-2026-01-23'),  # Same as text
+            "image": getattr(settings, 'default_image_model', 'dall-e-3'),
+            "video": getattr(settings, 'default_video_model', 'sora-2'),
+            "voice": getattr(settings, 'default_whisper_model', 'whisper-1'),
+        }
+    
+    @property
+    def MODELS(self) -> Dict[str, str]:
+        """Backward compatibility property for MODELS."""
+        return self.get_models()
     
     def is_configured(self) -> bool:
         """Check if main provider (CometAPI) is configured."""

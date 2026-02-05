@@ -35,6 +35,12 @@ interface BotSettings {
 }
 
 interface ApiSettings {
+  default_text_model: string;
+  default_image_model: string;
+  default_video_model: string;
+  default_voice_model: string;
+  default_gigachat_model: string;
+  default_ai_provider: string;
   max_context_messages: number;
   context_ttl_seconds: number;
   openai_timeout: number;
@@ -174,14 +180,17 @@ function SettingsPage() {
             style={{ marginBottom: 24 }}
           >
             <Alert
-              message="Fixed AI Models (No User Selection)"
+              message="AI Models Routing via CometAPI"
               description={
                 <div>
-                  <p><strong>Text Generation:</strong> Qwen-3-Max (via CometAPI)</p>
-                  <p><strong>Image Generation:</strong> DALL-E 3 (via CometAPI)</p>
-                  <p><strong>Video Generation:</strong> Sora 2 (via CometAPI)</p>
-                  <p><strong>Voice Recognition:</strong> Whisper (via CometAPI)</p>
-                  <p><strong>Presentations:</strong> GigaChat (Direct API)</p>
+                  <p><strong>Text/Vision:</strong> Configurable (default: qwen3-max-2026-01-23)</p>
+                  <p><strong>Images:</strong> Configurable (default: dall-e-3)</p>
+                  <p><strong>Video:</strong> Configurable (default: sora-2)</p>
+                  <p><strong>Voice:</strong> Configurable (default: whisper-1)</p>
+                  <p><strong>Presentations:</strong> GigaChat (separate API)</p>
+                  <p style={{ marginTop: 8, color: '#666' }}>
+                    <em>Configure models in the "AI Models Configuration" section below.</em>
+                  </p>
                 </div>
               }
               type="info"
@@ -391,16 +400,64 @@ function SettingsPage() {
             </Form>
           </Card>
 
-          {/* API Settings */}
-          <Card title="⚙️ API Settings">
+          {/* Model Configuration */}
+          <Card title="🎯 AI Models Configuration" style={{ marginBottom: 24 }}>
+            <Alert
+              message="Configurable Models"
+              description="These models are used via CometAPI. You can manually enter model names as they appear in CometAPI (e.g., qwen3-max-2026-01-23)."
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
             <Form form={apiForm} layout="vertical" onFinish={handleSaveApi}>
+              <Form.Item
+                name="default_text_model"
+                label="Text Generation Model"
+                rules={[{ required: true }]}
+                extra="Model for text/chat (e.g., qwen3-max-2026-01-23, gpt-4o)"
+              >
+                <Input placeholder="qwen3-max-2026-01-23" />
+              </Form.Item>
+              <Form.Item
+                name="default_image_model"
+                label="Image Generation Model"
+                rules={[{ required: true }]}
+                extra="Model for images (e.g., dall-e-3)"
+              >
+                <Input placeholder="dall-e-3" />
+              </Form.Item>
+              <Form.Item
+                name="default_video_model"
+                label="Video Generation Model"
+                rules={[{ required: true }]}
+                extra="Model for videos (e.g., sora-2, sora-2-pro)"
+              >
+                <Input placeholder="sora-2" />
+              </Form.Item>
+              <Form.Item
+                name="default_voice_model"
+                label="Speech Recognition Model"
+                rules={[{ required: true }]}
+                extra="Model for voice (e.g., whisper-1)"
+              >
+                <Input placeholder="whisper-1" />
+              </Form.Item>
+              <Form.Item
+                name="default_gigachat_model"
+                label="GigaChat Model (Presentations)"
+                rules={[{ required: true }]}
+                extra="GigaChat model for presentations (e.g., GigaChat-2-Max)"
+              >
+                <Input placeholder="GigaChat-2-Max" />
+              </Form.Item>
+              <Divider />
               <Form.Item
                 name="max_context_messages"
                 label="Max Context Messages"
                 rules={[{ required: true }]}
                 extra="Number of messages to keep in conversation context"
               >
-                <InputNumber min={1} max={50} style={{ width: '100%' }} />
+                <InputNumber min={1} max={100} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item
                 name="context_ttl_seconds"
@@ -416,11 +473,11 @@ function SettingsPage() {
                 rules={[{ required: true }]}
                 extra="Timeout for API requests"
               >
-                <InputNumber min={30} max={300} style={{ width: '100%' }} />
+                <InputNumber min={30} max={600} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" loading={saving}>
-                  Save API Settings
+                  Save Model & API Settings
                 </Button>
               </Form.Item>
             </Form>

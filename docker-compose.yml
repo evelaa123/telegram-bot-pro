@@ -20,10 +20,11 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Redis
+  # Redis Cache
   redis:
     image: redis:7-alpine
     container_name: telegram_ai_redis
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     ports:
@@ -37,8 +38,11 @@ services:
 
   # Telegram Bot
   bot:
-    build: .
-    container_name: telegram_ai_bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: telegram-bot-pro-bot:latest
+    container_name: telegram-bot-pro-bot
     command: python main.py
     env_file:
       - .env
@@ -46,9 +50,9 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-telegram_ai_bot}
       - REDIS_URL=redis://redis:6379/0
     volumes:
-      # Монтируем .env для динамических обновлений API ключей
+      # Mount .env for dynamic API key updates
       - ./.env:/app/.env:ro
-      # Монтируем исходники для горячей перезагрузки
+      # Mount sources for hot reload in development
       - ./bot:/app/bot
       - ./database:/app/database
       - ./config:/app/config
@@ -62,8 +66,11 @@ services:
 
   # Task Worker
   worker:
-    build: .
-    container_name: telegram_ai_worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: telegram-bot-pro-worker:latest
+    container_name: telegram-bot-pro-worker
     command: python run_worker.py
     env_file:
       - .env
@@ -86,8 +93,11 @@ services:
 
   # Admin API
   api:
-    build: .
-    container_name: telegram_ai_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: telegram-bot-pro-api:latest
+    container_name: telegram-bot-pro-api
     command: python run_api.py
     env_file:
       - .env
@@ -115,7 +125,8 @@ services:
     build:
       context: ./admin-frontend
       dockerfile: Dockerfile
-    container_name: telegram_ai_frontend
+    image: telegram-bot-pro-frontend:latest
+    container_name: telegram-bot-pro-frontend
     ports:
       - "3000:80"
     depends_on:
