@@ -1,34 +1,35 @@
 """
 Unified AI service that routes requests to the appropriate provider.
-Uses CometAPI as the main provider (Qwen-3-Max, DALL-E, Sora, Whisper).
-GigaChat is used for presentations.
+Uses CometAPI as the main provider for all AI operations.
+GigaChat is used for presentations (separate API).
 """
 from typing import Optional, AsyncGenerator, Dict, Any, List, Tuple, Literal
 from decimal import Decimal
 
 from bot.services.cometapi_service import cometapi_service, CometAPIService
 from bot.services.openai_service import openai_service, OpenAIService
-from bot.services.qwen_service import qwen_service, QwenService, get_qwen_service
 from config import settings
 import structlog
 
 logger = structlog.get_logger()
 
-AIProvider = Literal["cometapi", "openai", "qwen"]
+AIProvider = Literal["cometapi", "openai"]
 
 
 class AIService:
     """
-    Unified AI service that routes to CometAPI as main provider.
-    Fixed models per TZ:
-    - Text: Qwen-3-Max (via CometAPI)
-    - Images: DALL-E 3 (via CometAPI)
-    - Video: Sora 2 (via CometAPI)
-    - Voice: Whisper (via CometAPI)
-    - Presentations: GigaChat (direct)
+    Unified AI service that routes ALL requests to CometAPI.
+    
+    Fixed models (no user selection):
+    - Text: qwen-3-max (via CometAPI)
+    - Vision: qwen-3-max (via CometAPI)
+    - Images: dall-e-3 (via CometAPI)
+    - Video: sora-2 (via CometAPI)
+    - Voice: whisper-1 (via CometAPI)
+    - Presentations: GigaChat (direct API, separate)
     """
     
-    # Fixed models (no user selection)
+    # Fixed models - no user selection
     MODELS = {
         "text": "qwen-3-max",
         "vision": "qwen-3-max",
@@ -37,153 +38,61 @@ class AIService:
         "voice": "whisper-1",
     }
     
-    # Provider-specific model mappings (for backwards compatibility)
-    PROVIDER_MODELS = {
-        "cometapi": {
-            "text": ["qwen-3-max"],
-            "vision": ["qwen-3-max"],
-            "image": ["dall-e-3"],
-            "video": ["sora-2", "sora-2-pro"],
-            "voice": ["whisper-1"],
-        },
-        "openai": {
-            "text": ["gpt-4o", "gpt-4o-mini"],
-            "vision": ["gpt-4o"],
-            "image": ["dall-e-3"],
-            "video": ["sora-2", "sora-2-pro"],
-            "voice": ["whisper-1"],
-            "tts": ["tts-1", "tts-1-hd"],
-        },
-        "qwen": {
-            "text": ["qwen-turbo", "qwen-plus", "qwen-max", "qwen-max-longcontext"],
-            "vision": ["qwen-vl-plus", "qwen-vl-max"],
-            "image": ["wanx-v1", "wanx2.1-t2i-turbo", "wanx2.1-t2i-plus"],
-            "video": [],
-            "voice": ["paraformer-realtime-v2", "paraformer-v2"],
-            "tts": ["cosyvoice-v1", "sambert-zhichu-v1"],
-        }
-    }
-    
-    # Default models per provider
-    DEFAULT_MODELS = {
-        "cometapi": {
-            "text": "qwen-3-max",
-            "vision": "qwen-3-max",
-            "image": "dall-e-3",
-            "video": "sora-2",
-            "voice": "whisper-1",
-        },
-        "openai": {
-            "text": "gpt-4o-mini",
-            "vision": "gpt-4o",
-            "image": "dall-e-3",
-            "video": "sora-2",
-            "voice": "whisper-1",
-        },
-        "qwen": {
-            "text": "qwen-plus",
-            "vision": "qwen-vl-plus",
-            "image": "wanx-v1",
-            "voice": "paraformer-realtime-v2",
-        }
-    }
-    
     def __init__(self):
         self.cometapi = cometapi_service
-        self.openai = openai_service
-        self._qwen = None
+        self.openai = openai_service  # Fallback only
     
-    @property
-    def qwen(self) -> QwenService:
-        """Get Qwen service - lazy load to allow dynamic API key updates."""
-        if self._qwen is None:
-            self._qwen = qwen_service
-        return self._qwen
-    
-    def refresh_qwen_service(self):
-        """Force refresh of Qwen service to reload API key."""
-        self._qwen = QwenService()
+    def is_configured(self) -> bool:
+        """Check if main provider (CometAPI) is configured."""
+        return self.cometapi.is_configured()
     
     def get_default_provider(self) -> AIProvider:
-        """Get the default AI provider."""
+        """Get the default AI provider - always CometAPI if configured."""
         if self.cometapi.is_configured():
             return "cometapi"
         return "openai"
     
-    async def get_provider_for_user(
-        self, 
-        telegram_id: int, 
-        task_type: str = "text"
-    ) -> Tuple[AIProvider, str]:
-        """
-        Get the appropriate provider and model for a user.
-        Fixed models per TZ - no user selection.
-        
-        Args:
-            telegram_id: User's Telegram ID
-            task_type: Type of task (text, vision, image, video, voice)
-            
-        Returns:
-            Tuple of (provider_name, model_name)
-        """
-        # Use CometAPI as main provider with fixed models
-        if self.cometapi.is_configured():
-            provider = "cometapi"
-            model = self.MODELS.get(task_type, self.DEFAULT_MODELS["cometapi"].get(task_type))
-        else:
-            # Fallback to OpenAI if CometAPI not configured
-            provider = "openai"
-            model = self.DEFAULT_MODELS["openai"].get(task_type, "gpt-4o-mini")
-        
-        logger.debug(f"Provider for {task_type}: {provider}/{model}")
-        return provider, model
-    
-    def get_service(self, provider: AIProvider):
+    def get_service(self, provider: AIProvider = None):
         """Get the service instance for a provider."""
-        if provider == "cometapi":
-            return self.cometapi
-        if provider == "qwen":
-            return self.qwen
-        return self.openai
+        if provider == "openai":
+            return self.openai
+        return self.cometapi
     
     # =========================================
-    # Text Generation
+    # Text Generation (CometAPI / Qwen-3-Max)
     # =========================================
     
     async def generate_text_stream(
         self,
         messages: List[Dict[str, str]],
         telegram_id: int = None,
-        provider: AIProvider = None,
         model: str = None,
         max_tokens: int = 4096,
         temperature: float = 0.7
     ) -> AsyncGenerator[Tuple[str, bool], None]:
         """
-        Generate text with streaming, using CometAPI as main provider.
+        Generate text with streaming using CometAPI (Qwen-3-Max).
         
         Args:
             messages: List of message dicts with 'role' and 'content'
-            telegram_id: User's Telegram ID (for auto provider selection)
-            provider: Override provider selection
-            model: Override model selection
+            telegram_id: User's Telegram ID (for logging)
+            model: Override model (default: qwen-3-max)
             max_tokens: Maximum tokens to generate
             temperature: Creativity parameter
             
         Yields:
             Tuple of (chunk_text, is_complete_flag)
         """
-        if not provider and telegram_id:
-            provider, model = await self.get_provider_for_user(telegram_id, "text")
-        elif not provider:
-            provider = self.get_default_provider()
+        model = model or self.MODELS["text"]
         
-        if not model:
-            model = self.DEFAULT_MODELS.get(provider, self.DEFAULT_MODELS["cometapi"])["text"]
-        
-        logger.info(f"Text generation using {provider}/{model}")
-        
-        service = self.get_service(provider)
+        # Use CometAPI if configured, otherwise fall back to OpenAI
+        if self.cometapi.is_configured():
+            service = self.cometapi
+            logger.info(f"Text generation using CometAPI/{model}", user_id=telegram_id)
+        else:
+            service = self.openai
+            model = "gpt-4o-mini"  # Fallback model
+            logger.info(f"Text generation using OpenAI/{model} (fallback)", user_id=telegram_id)
         
         async for chunk, is_complete in service.generate_text_stream(
             messages=messages,
@@ -197,28 +106,26 @@ class AIService:
         self,
         messages: List[Dict[str, str]],
         telegram_id: int = None,
-        provider: AIProvider = None,
         model: str = None,
         max_tokens: int = 4096,
         temperature: float = 0.7
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Generate text without streaming.
+        Generate text without streaming using CometAPI (Qwen-3-Max).
         
         Returns:
             Tuple of (response_text, usage_info)
         """
-        if not provider and telegram_id:
-            provider, model = await self.get_provider_for_user(telegram_id, "text")
-        elif not provider:
-            provider = self.get_default_provider()
+        model = model or self.MODELS["text"]
         
-        if not model:
-            model = self.DEFAULT_MODELS.get(provider, self.DEFAULT_MODELS["cometapi"])["text"]
+        if self.cometapi.is_configured():
+            service = self.cometapi
+            logger.info(f"Text generation using CometAPI/{model}", user_id=telegram_id)
+        else:
+            service = self.openai
+            model = "gpt-4o-mini"
+            logger.info(f"Text generation using OpenAI/{model} (fallback)", user_id=telegram_id)
         
-        logger.info(f"Text generation using {provider}/{model}")
-        
-        service = self.get_service(provider)
         return await service.generate_text(
             messages=messages,
             model=model,
@@ -227,7 +134,7 @@ class AIService:
         )
     
     # =========================================
-    # Vision (Image Analysis)
+    # Vision (Image Analysis via CometAPI)
     # =========================================
     
     async def analyze_image(
@@ -236,38 +143,31 @@ class AIService:
         image_data: bytes = None,
         prompt: str = "Describe this image in detail.",
         telegram_id: int = None,
-        provider: AIProvider = None,
         model: str = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Analyze image using appropriate provider.
+        Analyze image using CometAPI (Qwen-3-Max vision).
         
         Returns:
             Tuple of (analysis_text, usage_info)
         """
-        if not provider and telegram_id:
-            provider, model = await self.get_provider_for_user(telegram_id, "vision")
-        elif not provider:
-            provider = "openai"
+        model = model or self.MODELS["vision"]
         
-        if not model:
-            model = self.DEFAULT_MODELS[provider]["vision"]
-        
-        logger.info(f"Image analysis using {provider}/{model}")
-        
-        if provider == "qwen":
-            return await self.qwen.analyze_image(
+        if self.cometapi.is_configured():
+            logger.info(f"Image analysis using CometAPI/{model}", user_id=telegram_id)
+            return await self.cometapi.analyze_image(
                 image_url=image_url,
                 image_data=image_data,
                 prompt=prompt,
                 model=model
             )
         else:
+            logger.info("Image analysis using OpenAI/gpt-4o (fallback)", user_id=telegram_id)
             return await self.openai.analyze_image(
                 image_url=image_url,
                 image_data=image_data,
                 prompt=prompt,
-                model=model
+                model="gpt-4o"
             )
     
     async def analyze_document_images(
@@ -275,40 +175,33 @@ class AIService:
         images: List[bytes],
         prompt: str,
         telegram_id: int = None,
-        provider: AIProvider = None,
         model: str = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Analyze multiple document page images.
+        Analyze multiple document page images via CometAPI.
         
         Returns:
             Tuple of (analysis_text, usage_info)
         """
-        if not provider and telegram_id:
-            provider, model = await self.get_provider_for_user(telegram_id, "vision")
-        elif not provider:
-            provider = "openai"
+        model = model or self.MODELS["vision"]
         
-        if not model:
-            model = self.DEFAULT_MODELS[provider]["vision"]
-        
-        logger.info(f"Document analysis using {provider}/{model}")
-        
-        if provider == "qwen":
-            return await self.qwen.analyze_document_images(
+        if self.cometapi.is_configured():
+            logger.info(f"Document analysis using CometAPI/{model}", user_id=telegram_id)
+            return await self.cometapi.analyze_document_images(
                 images=images,
                 prompt=prompt,
                 model=model
             )
         else:
+            logger.info("Document analysis using OpenAI/gpt-4o (fallback)", user_id=telegram_id)
             return await self.openai.analyze_document_images(
                 images=images,
                 prompt=prompt,
-                model=model
+                model="gpt-4o"
             )
     
     # =========================================
-    # Image Generation
+    # Image Generation (CometAPI / DALL-E 3)
     # =========================================
     
     async def generate_image(
@@ -318,50 +211,35 @@ class AIService:
         style: str = "vivid",
         quality: str = "standard",
         telegram_id: int = None,
-        provider: AIProvider = None,
         model: str = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Generate image using appropriate provider.
+        Generate image using CometAPI (DALL-E 3).
         
         Args:
             prompt: Image description
-            size: Image size
-            style: Style (OpenAI: vivid/natural, Qwen: various presets)
-            quality: Quality level
-            telegram_id: User ID for provider selection
-            provider: Override provider
-            model: Override model
+            size: Image size (1024x1024, 1792x1024, 1024x1792)
+            style: Style (vivid, natural)
+            quality: Quality level (standard, hd)
+            telegram_id: User ID for logging
+            model: Override model (default: dall-e-3)
             
         Returns:
             Tuple of (image_url, usage_info)
         """
-        if not provider and telegram_id:
-            provider, model = await self.get_provider_for_user(telegram_id, "image")
-        elif not provider:
-            provider = "openai"
+        model = model or self.MODELS["image"]
         
-        logger.info(f"Image generation using {provider}")
-        
-        if provider == "qwen" and self.qwen.is_configured():
-            # Convert size format for Qwen (1024x1024 -> 1024*1024)
-            qwen_size = size.replace("x", "*")
-            
-            # Map OpenAI styles to Qwen styles
-            style_map = {
-                "vivid": "<auto>",
-                "natural": "<photography>",
-            }
-            qwen_style = style_map.get(style, "<auto>")
-            
-            return await self.qwen.generate_image(
+        if self.cometapi.is_configured():
+            logger.info(f"Image generation using CometAPI/{model}", user_id=telegram_id, size=size)
+            return await self.cometapi.generate_image(
                 prompt=prompt,
-                size=qwen_size,
-                model=model or settings.default_qwen_image_model,
-                style=qwen_style,
+                size=size,
+                style=style,
+                quality=quality,
+                model=model
             )
         else:
-            # Use OpenAI DALL-E 3
+            logger.info("Image generation using OpenAI/dall-e-3 (fallback)", user_id=telegram_id)
             return await self.openai.generate_image(
                 prompt=prompt,
                 size=size,
@@ -369,40 +247,66 @@ class AIService:
                 quality=quality
             )
     
-    async def download_image(self, url: str, provider: AIProvider = "openai") -> bytes:
-        """Download image from URL using appropriate service."""
-        if provider == "qwen":
-            return await self.qwen.download_image(url)
+    async def download_image(self, url: str) -> bytes:
+        """Download image from URL."""
+        if self.cometapi.is_configured():
+            return await self.cometapi.download_image(url)
         return await self.openai.download_image(url)
     
     # =========================================
-    # Video Generation (OpenAI only)
+    # Video Generation (CometAPI / Sora)
     # =========================================
     
     async def create_video(
         self,
         prompt: str,
-        model: str = "sora-2",
+        model: str = None,
         duration: int = 5,
-        size: str = "1280x720"
+        size: str = "1280x720",
+        telegram_id: int = None
     ) -> Dict[str, Any]:
         """
-        Create video - always uses OpenAI Sora.
-        Qwen doesn't have public video generation API.
+        Create video using CometAPI (Sora 2).
+        
+        Args:
+            prompt: Video description
+            model: sora-2 or sora-2-pro (default: sora-2)
+            duration: Duration in seconds (4, 8, or 12)
+            size: Resolution
+            telegram_id: User ID for logging
+            
+        Returns:
+            Video task info with video_id
         """
-        return await self.openai.create_video(
-            prompt=prompt,
-            model=model,
-            duration=duration,
-            size=size
-        )
+        model = model or self.MODELS["video"]
+        
+        if self.cometapi.is_configured():
+            logger.info(f"Video creation using CometAPI/{model}", user_id=telegram_id)
+            return await self.cometapi.create_video(
+                prompt=prompt,
+                model=model,
+                duration=duration,
+                size=size
+            )
+        else:
+            logger.info(f"Video creation using OpenAI/{model} (fallback)", user_id=telegram_id)
+            return await self.openai.create_video(
+                prompt=prompt,
+                model=model,
+                duration=duration,
+                size=size
+            )
     
     async def get_video_status(self, video_id: str) -> Dict[str, Any]:
         """Check video generation status."""
+        if self.cometapi.is_configured():
+            return await self.cometapi.get_video_status(video_id)
         return await self.openai.get_video_status(video_id)
     
     async def download_video(self, video_id: str) -> bytes:
         """Download completed video."""
+        if self.cometapi.is_configured():
+            return await self.cometapi.download_video(video_id)
         return await self.openai.download_video(video_id)
     
     async def wait_for_video(
@@ -413,6 +317,13 @@ class AIService:
         progress_callback=None
     ) -> Dict[str, Any]:
         """Wait for video generation to complete."""
+        if self.cometapi.is_configured():
+            return await self.cometapi.wait_for_video(
+                video_id=video_id,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                progress_callback=progress_callback
+            )
         return await self.openai.wait_for_video(
             video_id=video_id,
             poll_interval=poll_interval,
@@ -421,7 +332,7 @@ class AIService:
         )
     
     # =========================================
-    # Speech Recognition
+    # Speech Recognition (CometAPI / Whisper)
     # =========================================
     
     async def transcribe_audio(
@@ -430,28 +341,22 @@ class AIService:
         filename: str = "audio.ogg",
         language: str = None,
         telegram_id: int = None,
-        provider: AIProvider = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Transcribe audio using appropriate provider.
+        Transcribe audio using CometAPI (Whisper).
         
         Returns:
             Tuple of (transcribed_text, usage_info)
         """
-        if not provider and telegram_id:
-            provider, _ = await self.get_provider_for_user(telegram_id, "voice")
-        elif not provider:
-            provider = "openai"
-        
-        logger.info(f"Audio transcription using {provider}")
-        
-        if provider == "qwen" and self.qwen.is_configured():
-            return await self.qwen.transcribe_audio(
+        if self.cometapi.is_configured():
+            logger.info(f"Audio transcription using CometAPI/whisper-1", user_id=telegram_id)
+            return await self.cometapi.transcribe_audio(
                 audio_data=audio_data,
                 filename=filename,
                 language=language
             )
         else:
+            logger.info("Audio transcription using OpenAI/whisper-1 (fallback)", user_id=telegram_id)
             return await self.openai.transcribe_audio(
                 audio_data=audio_data,
                 filename=filename,
@@ -459,72 +364,69 @@ class AIService:
             )
     
     # =========================================
-    # Text-to-Speech
+    # Meeting Protocol Generation
     # =========================================
     
-    async def synthesize_speech(
+    async def generate_meeting_protocol(
         self,
-        text: str,
-        voice: str = None,
-        telegram_id: int = None,
-        provider: AIProvider = None,
-    ) -> Tuple[bytes, Dict[str, Any]]:
+        transcription: str,
+        language: str = "ru",
+        telegram_id: int = None
+    ) -> Tuple[str, Dict[str, Any]]:
         """
-        Convert text to speech using appropriate provider.
+        Generate meeting protocol from transcription using CometAPI.
         
         Returns:
-            Tuple of (audio_bytes, usage_info)
+            Tuple of (protocol_text, usage_info)
         """
-        if not provider and telegram_id:
-            provider, _ = await self.get_provider_for_user(telegram_id, "tts")
-        elif not provider:
-            provider = "openai"
-        
-        logger.info(f"Text-to-speech using {provider}")
-        
-        if provider == "qwen" and self.qwen.is_configured():
-            # Qwen voices: longxiaochun, longxiaoxia, etc.
-            qwen_voice = voice or "longxiaochun"
-            return await self.qwen.synthesize_speech(
-                text=text,
-                voice=qwen_voice
+        if self.cometapi.is_configured():
+            logger.info("Meeting protocol generation using CometAPI", user_id=telegram_id)
+            return await self.cometapi.generate_meeting_protocol(
+                transcription=transcription,
+                language=language
             )
         else:
-            # OpenAI TTS
-            # TODO: Implement OpenAI TTS if needed
-            raise NotImplementedError("OpenAI TTS not implemented yet")
+            # Fallback: use OpenAI for meeting protocol
+            logger.info("Meeting protocol generation using OpenAI (fallback)", user_id=telegram_id)
+            
+            if language == "ru":
+                system_prompt = """Ты — профессиональный секретарь, который создаёт протоколы совещаний.
+На основе транскрипции создай структурированный протокол совещания."""
+            else:
+                system_prompt = """You are a professional secretary who creates meeting protocols.
+Based on the transcription, create a structured meeting protocol."""
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Создай протокол на основе этой транскрипции:\n\n{transcription}"}
+            ]
+            
+            return await self.openai.generate_text(messages, max_tokens=4096, temperature=0.3)
     
     # =========================================
     # Utility Methods
     # =========================================
     
-    def get_available_models(self, provider: AIProvider, task_type: str) -> List[str]:
-        """Get available models for a provider and task type."""
-        return self.PROVIDER_MODELS.get(provider, {}).get(task_type, [])
-    
-    def is_provider_available(self, provider: AIProvider, task_type: str) -> bool:
-        """Check if a provider supports a specific task type."""
-        models = self.get_available_models(provider, task_type)
-        if not models:
-            return False
-        if provider == "qwen":
-            return self.qwen.is_configured()
-        return True
-    
     def get_provider_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all providers."""
-        qwen_configured = self.qwen.is_configured()
-        
+        """Get status of AI providers."""
         return {
-            "openai": {
-                "configured": True,
+            "cometapi": {
+                "configured": self.cometapi.is_configured(),
+                "is_primary": True,
                 "capabilities": ["text", "vision", "image", "video", "voice"]
             },
-            "qwen": {
-                "configured": qwen_configured,
-                "capabilities": ["text", "vision", "image", "voice", "tts"] if qwen_configured else []
+            "openai": {
+                "configured": True,  # Always available as fallback
+                "is_primary": False,
+                "capabilities": ["text", "vision", "image", "video", "voice"]
             }
         }
+    
+    def is_provider_available(self, provider: str, task_type: str) -> bool:
+        """Check if provider supports a task type."""
+        if provider == "cometapi":
+            return self.cometapi.is_configured()
+        return True  # OpenAI always available
 
 
 # Global service instance

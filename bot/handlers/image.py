@@ -181,7 +181,6 @@ async def generate_image(
     language = await user_service.get_user_language(user_id)
     user_settings = await user_service.get_user_settings(user_id)
     style = user_settings.get("image_style", "vivid")
-    ai_provider = user_settings.get("ai_provider", "openai")
     
     # Check limits
     has_limit, current, max_limit = await limit_service.check_limit(
@@ -204,18 +203,11 @@ async def generate_image(
     # Show typing indicator
     await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
     
-    # Determine which provider will be used
-    actual_provider = ai_provider
-    if ai_provider == "qwen" and not ai_service.is_provider_available("qwen", "image"):
-        actual_provider = "openai"
-    
-    # Send progress message
+    # Send progress message (no provider info shown to user)
     if language == "ru":
-        provider_name = "Qwen Wanx" if actual_provider == "qwen" else "DALL-E 3"
-        progress_msg = await message.answer(f"🎨 Генерирую изображение ({provider_name})...")
+        progress_msg = await message.answer("🎨 Генерирую изображение...")
     else:
-        provider_name = "Qwen Wanx" if actual_provider == "qwen" else "DALL-E 3"
-        progress_msg = await message.answer(f"🎨 Generating image ({provider_name})...")
+        progress_msg = await message.answer("🎨 Generating image...")
     
     # Animate progress
     animation_task = asyncio.create_task(
@@ -235,22 +227,23 @@ async def generate_image(
         animation_task.cancel()
         
         # Download image
-        provider_used = usage.get("model", "").startswith("wanx") and "qwen" or "openai"
-        image_bytes = await ai_service.download_image(image_url, provider=provider_used)
+        image_bytes = await ai_service.download_image(image_url)
         
         # Send image
         photo = BufferedInputFile(image_bytes, filename="generated_image.png")
         
-        # Prepare caption
-        model_used = usage.get("model", "unknown")
+        # Prepare caption (without model info)
         revised_prompt = usage.get("revised_prompt", prompt)
         if len(revised_prompt) > 800:
             revised_prompt = revised_prompt[:800] + "..."
         
         if language == "ru":
-            caption = f"🖼 <b>Сгенерировано ({model_used}):</b>\n<i>{revised_prompt}</i>"
+            caption = f"🖼 <b>Сгенерировано:</b>\n<i>{revised_prompt}</i>"
         else:
-            caption = f"🖼 <b>Generated ({model_used}):</b>\n<i>{revised_prompt}</i>"
+            caption = f"🖼 <b>Generated:</b>\n<i>{revised_prompt}</i>"
+        
+        # Get model for logging only
+        model_used = usage.get("model", "unknown")
         
         # Delete progress message
         try:

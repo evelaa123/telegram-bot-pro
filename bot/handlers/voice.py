@@ -65,11 +65,11 @@ async def handle_voice_message(message: Message):
     # Show typing indicator
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     
-    # Send progress message
+    # Send progress message (no provider info shown to user)
     if language == "ru":
-        progress_msg = await message.answer("🎤 Распознаю речь (Whisper)...")
+        progress_msg = await message.answer("🎤 Распознаю речь...")
     else:
-        progress_msg = await message.answer("🎤 Transcribing speech (Whisper)...")
+        progress_msg = await message.answer("🎤 Transcribing speech...")
     
     try:
         # Download voice file
@@ -100,12 +100,12 @@ async def handle_voice_message(message: Message):
                 )
             return
         
-        # Format result
-        model_used = usage.get("model", "unknown")
+        # Format result (without model info)
+        model_used = usage.get("model", "unknown")  # For logging only
         if language == "ru":
-            result_text = f"📝 <b>Распознанный текст ({model_used}):</b>\n\n{text}"
+            result_text = f"📝 <b>Распознанный текст:</b>\n\n{text}"
         else:
-            result_text = f"📝 <b>Transcribed text ({model_used}):</b>\n\n{text}"
+            result_text = f"📝 <b>Transcribed text:</b>\n\n{text}"
         
         await progress_msg.edit_text(result_text)
         
@@ -340,15 +340,15 @@ async def handle_audio_file(message: Message):
                 )
             return
         
-        # Format result
+        # Format result (without model info)
         if len(text) > 4000:
             text = text[:4000] + "\n\n... (текст обрезан)"
         
-        model_used = usage.get("model", "unknown")
+        model_used = usage.get("model", "unknown")  # For logging only
         if language == "ru":
-            result_text = f"📝 <b>Распознанный текст из {filename} ({model_used}):</b>\n\n{text}"
+            result_text = f"📝 <b>Распознанный текст из {filename}:</b>\n\n{text}"
         else:
-            result_text = f"📝 <b>Transcribed text from {filename} ({model_used}):</b>\n\n{text}"
+            result_text = f"📝 <b>Transcribed text from {filename}:</b>\n\n{text}"
         
         await progress_msg.edit_text(result_text)
         

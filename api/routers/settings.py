@@ -64,12 +64,17 @@ def mask_api_key(key: str) -> str:
 
 def get_api_keys_status() -> ApiKeysStatus:
     """Get current API keys status from environment."""
+    cometapi_key = getattr(app_settings, 'cometapi_api_key', '')
+    gigachat_credentials = getattr(app_settings, 'gigachat_credentials', '')
     openai_key = app_settings.openai_api_key
     qwen_key = app_settings.qwen_api_key
     
     return ApiKeysStatus(
+        cometapi_configured=bool(cometapi_key and len(cometapi_key) > 10),
+        gigachat_configured=bool(gigachat_credentials and len(gigachat_credentials) > 10),
         openai_configured=bool(openai_key and len(openai_key) > 10),
         qwen_configured=bool(qwen_key and len(qwen_key) > 10),
+        cometapi_key_preview=mask_api_key(cometapi_key) if cometapi_key else None,
         openai_key_preview=mask_api_key(openai_key) if openai_key else None,
         qwen_key_preview=mask_api_key(qwen_key) if qwen_key else None,
     )
