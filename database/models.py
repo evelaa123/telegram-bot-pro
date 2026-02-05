@@ -24,6 +24,20 @@ class RequestType(enum.Enum):
     VIDEO = "video"
     VOICE = "voice"
     DOCUMENT = "document"
+    PRESENTATION = "presentation"
+
+
+class SubscriptionType(enum.Enum):
+    """User subscription types."""
+    FREE = "free"
+    PREMIUM = "premium"
+
+
+class ReminderType(enum.Enum):
+    """Types of reminders."""
+    DIARY = "diary"          # Personal diary entry
+    CHANNEL_EVENT = "channel_event"  # Channel event reminder
+    ALARM = "alarm"          # Alarm/wake up
 
 
 class RequestStatus(enum.Enum):
@@ -51,7 +65,7 @@ class AdminRole(enum.Enum):
 class User(Base):
     """
     Telegram user model.
-    Stores user information, settings, and custom limits.
+    Stores user information, settings, subscription, and custom limits.
     """
     __tablename__ = "users"
     
@@ -64,33 +78,34 @@ class User(Base):
     
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
+    # Subscription fields
+    subscription_type: Mapped[SubscriptionType] = mapped_column(
+        Enum(SubscriptionType),
+        default=SubscriptionType.FREE,
+        nullable=False
+    )
+    subscription_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+    
     # Custom limits override global defaults (JSONB)
     custom_limits: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     
     # User settings (JSONB)
     # Supported settings:
-    # - gpt_model: OpenAI model for text (gpt-4o, gpt-4o-mini)
-    # - qwen_model: Qwen model for text (qwen-turbo, qwen-plus, qwen-max)
-    # - ai_provider: Default AI provider (openai, qwen)
-    # - ai_provider_text: Provider for text requests
-    # - ai_provider_vision: Provider for image analysis
-    # - ai_provider_document: Provider for document analysis
     # - image_style: DALL-E style (vivid, natural)
     # - auto_voice_process: Auto-process voice messages
     # - language: UI language (ru, en)
+    # - timezone: User timezone for reminders
     settings: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSON, 
         nullable=True,
         default=lambda: {
-            "gpt_model": "gpt-4o-mini",
-            "qwen_model": "qwen-plus",
-            "ai_provider": "openai",
-            "ai_provider_text": "openai",
-            "ai_provider_vision": "openai",
-            "ai_provider_document": "openai",
             "image_style": "vivid",
             "auto_voice_process": False,
-            "language": "ru"
+            "language": "ru",
+            "timezone": "Europe/Moscow"
         }
     )
     
@@ -126,6 +141,31 @@ class User(Base):
         back_populates="user",
         lazy="selectin"
     )
+    diary_entries: Mapped[List["DiaryEntry"]] = relationship(
+        "DiaryEntry",
+        back_populates="user",
+        lazy="selectin"
+    )
+    reminders: Mapped[List["Reminder"]] = relationship(
+        "Reminder",
+        back_populates="user",
+        lazy="selectin"
+    )
+    subscriptions: Mapped[List["Subscription"]] = relationship(
+        "Subscription",
+        back_populates="user",
+        lazy="selectin"
+    )
+    
+    @property
+    def is_premium(self) -> bool:
+        """Check if user has active premium subscription."""
+        if self.subscription_type == SubscriptionType.FREE:
+            return False
+        if self.subscription_expires_at is None:
+            return False
+        from datetime import timezone
+        return self.subscription_expires_at > datetime.now(timezone.utc)
     
     def __repr__(self) -> str:
         return f"<User(id={self.id}, telegram_id={self.telegram_id}, username={self.username})>"
@@ -192,6 +232,7 @@ class DailyLimit(Base):
     video_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     voice_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     document_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    presentation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="daily_limits")
@@ -331,3 +372,183 @@ class Setting(Base):
     
     def __repr__(self) -> str:
         return f"<Setting(key={self.key})>"
+
+
+class DiaryEntry(Base):
+    """
+    User diary entries for the personal assistant feature.
+    """
+    __tablename__ = "diary_entries"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    
+    # Optional tags/categories as JSON array
+    tags: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    
+    # Mood tracking (1-5 scale)
+    mood: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False
+    )
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="diary_entries")
+    
+    __table_args__ = (
+        Index("ix_diary_user_date", "user_id", "date"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<DiaryEntry(id={self.id}, user_id={self.user_id}, date={self.date})>"
+
+
+class Reminder(Base):
+    """
+    User reminders including alarms, channel events, and personal tasks.
+    """
+    __tablename__ = "reminders"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    type: Mapped[ReminderType] = mapped_column(Enum(ReminderType), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # When to remind
+    remind_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True
+    )
+    
+    # For recurring reminders (e.g., daily alarm)
+    # Format: "daily", "weekly:1,3,5" (Mon, Wed, Fri), "monthly:15"
+    recurrence: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    
+    # Channel post reference (for channel event reminders)
+    channel_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    channel_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+    last_triggered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="reminders")
+    
+    __table_args__ = (
+        Index("ix_reminders_user_time", "user_id", "remind_at"),
+        Index("ix_reminders_active_time", "is_active", "remind_at"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<Reminder(id={self.id}, type={self.type.value}, remind_at={self.remind_at})>"
+
+
+class Subscription(Base):
+    """
+    Subscription payment records.
+    Tracks all premium subscription purchases.
+    """
+    __tablename__ = "subscriptions"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Payment details
+    payment_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    payment_provider: Mapped[str] = mapped_column(String(50), nullable=False)  # yookassa, robokassa, etc.
+    amount_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    
+    # Subscription period
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="subscriptions")
+    
+    __table_args__ = (
+        Index("ix_subscriptions_user_active", "user_id", "is_active"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<Subscription(id={self.id}, user_id={self.user_id}, expires_at={self.expires_at})>"
+
+
+class APIUsageLog(Base):
+    """
+    Detailed API usage log for cost tracking and analytics.
+    Tracks every API call with cost information.
+    """
+    __tablename__ = "api_usage_logs"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # cometapi, gigachat
+    model: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(100), nullable=False)  # chat, image, video, audio
+    
+    # Token/unit counts
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Cost tracking
+    cost_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6), nullable=True)
+    cost_rub: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)
+    
+    # Response time
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Status
+    success: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True
+    )
+    
+    __table_args__ = (
+        Index("ix_api_usage_provider_date", "provider", "created_at"),
+        Index("ix_api_usage_model_date", "model", "created_at"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<APIUsageLog(id={self.id}, provider={self.provider}, model={self.model})>"

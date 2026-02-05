@@ -1,135 +1,367 @@
 """
-Subscription verification service.
+Subscription management service.
+Handles premium subscriptions and payment integration.
 """
-from typing import Optional
-from aiogram import Bot
-from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, Tuple
+from decimal import Decimal
+import uuid
+import hmac
+import hashlib
 
-from database.redis_client import redis_client
+from sqlalchemy import select, update, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import async_session_maker
+from database.models import User, Subscription, SubscriptionType
 from config import settings
 import structlog
+import aiohttp
 
 logger = structlog.get_logger()
 
 
 class SubscriptionService:
-    """Service for verifying user subscription to the channel."""
+    """
+    Service for managing user subscriptions and payments.
+    Supports YooKassa (YooMoney) payment provider.
+    """
     
-    SUBSCRIBED_STATUSES = {
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.CREATOR,
-        "member",
-        "administrator", 
-        "creator"
-    }
+    # YooKassa API
+    YOOKASSA_API_URL = "https://api.yookassa.ru/v3"
     
-    async def check_subscription(
-        self,
-        bot: Bot,
-        user_id: int,
-        channel_id: int = None,
-        use_cache: bool = True
-    ) -> bool:
+    async def check_premium(self, telegram_id: int) -> bool:
         """
-        Check if user is subscribed to the channel.
+        Check if user has active premium subscription.
         
         Args:
-            bot: Bot instance
-            user_id: Telegram user ID
-            channel_id: Channel ID (from DB or config)
-            use_cache: Whether to use cached result
+            telegram_id: Telegram user ID
+            
+        Returns:
+            True if user has active premium
         """
-        if not channel_id:
-            channel_id = settings.telegram_channel_id
-        
-        if not channel_id:
-            logger.warning("No channel_id configured")
-            return True
-        
-        # Check cache
-        if use_cache:
-            cached = await redis_client.get_subscription_status(user_id)
-            if cached is not None:
-                return cached
-        
-        # Check via Telegram API
-        try:
-            member = await bot.get_chat_member(
-                chat_id=channel_id,
-                user_id=user_id
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .where(User.telegram_id == telegram_id)
             )
+            user = result.scalar_one_or_none()
             
-            is_subscribed = member.status in self.SUBSCRIBED_STATUSES
-            
-            await redis_client.set_subscription_status(
-                user_id,
-                is_subscribed,
-                ttl=settings.subscription_cache_ttl
-            )
-            
-            return is_subscribed
-            
-        except TelegramBadRequest as e:
-            error_str = str(e).lower()
-            if "user not found" in error_str:
-                await redis_client.set_subscription_status(user_id, False, ttl=settings.subscription_cache_ttl)
+            if not user:
                 return False
-            if "chat not found" in error_str:
-                logger.error(f"Channel not found: {channel_id}")
-                return True
-            logger.error(f"Telegram API error: {e}")
-            return True
             
-        except TelegramForbiddenError:
-            logger.error(f"Bot has no access to channel {channel_id}")
-            return True
+            return user.is_premium
+    
+    async def get_subscription_info(
+        self,
+        telegram_id: int
+    ) -> Dict[str, Any]:
+        """
+        Get user's subscription information.
+        
+        Returns:
+            Dict with subscription details
+        """
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                return {
+                    "type": "free",
+                    "is_premium": False,
+                    "expires_at": None
+                }
+            
+            return {
+                "type": user.subscription_type.value,
+                "is_premium": user.is_premium,
+                "expires_at": user.subscription_expires_at
+            }
+    
+    async def create_payment(
+        self,
+        telegram_id: int,
+        months: int = 1
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Create payment for premium subscription.
+        
+        Args:
+            telegram_id: Telegram user ID
+            months: Number of months to subscribe
+            
+        Returns:
+            Tuple of (payment_url, payment_id) or (None, None) on error
+        """
+        amount = settings.premium_price_rub * months
+        
+        # Generate unique payment ID
+        payment_id = f"sub_{telegram_id}_{uuid.uuid4().hex[:8]}"
+        
+        if settings.payment_provider == "yookassa":
+            return await self._create_yookassa_payment(
+                telegram_id=telegram_id,
+                amount=amount,
+                payment_id=payment_id,
+                months=months
+            )
+        else:
+            logger.error("Unknown payment provider", provider=settings.payment_provider)
+            return None, None
+    
+    async def _create_yookassa_payment(
+        self,
+        telegram_id: int,
+        amount: int,
+        payment_id: str,
+        months: int
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Create YooKassa payment."""
+        shop_id = settings.yookassa_shop_id
+        secret_key = settings.yookassa_secret_key
+        
+        if not shop_id or not secret_key:
+            logger.error("YooKassa not configured")
+            return None, None
+        
+        # Create payment request
+        payload = {
+            "amount": {
+                "value": f"{amount}.00",
+                "currency": "RUB"
+            },
+            "capture": True,
+            "confirmation": {
+                "type": "redirect",
+                "return_url": f"https://t.me/{settings.bot_username}"
+            },
+            "description": f"Премиум подписка на {months} мес.",
+            "metadata": {
+                "telegram_id": telegram_id,
+                "months": months,
+                "payment_id": payment_id
+            }
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Idempotence-Key": payment_id
+        }
+        
+        auth = aiohttp.BasicAuth(shop_id, secret_key)
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.YOOKASSA_API_URL}/payments",
+                    json=payload,
+                    headers=headers,
+                    auth=auth
+                ) as response:
+                    if response.status != 200:
+                        error = await response.text()
+                        logger.error("YooKassa payment creation failed", error=error)
+                        return None, None
+                    
+                    data = await response.json()
+                    
+                    payment_url = data["confirmation"]["confirmation_url"]
+                    yookassa_id = data["id"]
+                    
+                    logger.info(
+                        "Payment created",
+                        payment_id=payment_id,
+                        yookassa_id=yookassa_id,
+                        telegram_id=telegram_id
+                    )
+                    
+                    return payment_url, yookassa_id
+                    
+        except Exception as e:
+            logger.error("Failed to create YooKassa payment", error=str(e))
+            return None, None
+    
+    async def process_payment_webhook(
+        self,
+        data: Dict[str, Any]
+    ) -> bool:
+        """
+        Process payment webhook from YooKassa.
+        
+        Args:
+            data: Webhook payload
+            
+        Returns:
+            True if processed successfully
+        """
+        try:
+            event = data.get("event")
+            payment = data.get("object", {})
+            
+            if event != "payment.succeeded":
+                logger.info("Ignoring webhook event", event=event)
+                return True
+            
+            metadata = payment.get("metadata", {})
+            telegram_id = metadata.get("telegram_id")
+            months = metadata.get("months", 1)
+            payment_id = metadata.get("payment_id")
+            
+            if not telegram_id:
+                logger.error("Missing telegram_id in payment metadata")
+                return False
+            
+            # Activate subscription
+            return await self.activate_subscription(
+                telegram_id=int(telegram_id),
+                months=int(months),
+                payment_id=payment_id,
+                payment_provider="yookassa",
+                amount_rub=Decimal(payment["amount"]["value"])
+            )
             
         except Exception as e:
-            logger.error(f"Error checking subscription: {e}")
+            logger.error("Failed to process payment webhook", error=str(e))
+            return False
+    
+    async def activate_subscription(
+        self,
+        telegram_id: int,
+        months: int,
+        payment_id: str,
+        payment_provider: str,
+        amount_rub: Decimal
+    ) -> bool:
+        """
+        Activate premium subscription for user.
+        
+        Args:
+            telegram_id: Telegram user ID
+            months: Number of months
+            payment_id: Payment ID from provider
+            payment_provider: Provider name
+            amount_rub: Amount paid in RUB
+            
+        Returns:
+            True if activated successfully
+        """
+        async with async_session_maker() as session:
+            # Get user
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.error("User not found for subscription", telegram_id=telegram_id)
+                return False
+            
+            # Calculate subscription period
+            now = datetime.now(timezone.utc)
+            
+            # If user already has subscription, extend it
+            if user.subscription_expires_at and user.subscription_expires_at > now:
+                starts_at = user.subscription_expires_at
+            else:
+                starts_at = now
+            
+            expires_at = starts_at + timedelta(days=30 * months)
+            
+            # Update user subscription
+            user.subscription_type = SubscriptionType.PREMIUM
+            user.subscription_expires_at = expires_at
+            
+            # Create subscription record
+            subscription = Subscription(
+                user_id=user.id,
+                payment_id=payment_id,
+                payment_provider=payment_provider,
+                amount_rub=amount_rub,
+                starts_at=starts_at,
+                expires_at=expires_at,
+                is_active=True
+            )
+            
+            session.add(subscription)
+            await session.commit()
+            
+            logger.info(
+                "Subscription activated",
+                telegram_id=telegram_id,
+                expires_at=expires_at
+            )
+            
             return True
     
-    async def refresh_subscription(self, bot: Bot, user_id: int, channel_id: int = None) -> bool:
-        """Force refresh subscription status."""
-        await redis_client.invalidate_subscription(user_id)
-        return await self.check_subscription(bot, user_id, channel_id, use_cache=False)
-    
-    async def get_subscription_message(self, language: str = "ru") -> str:
-        """Get message for unsubscribed users."""
-        from bot.services.settings_service import settings_service
+    async def get_subscription_text(
+        self,
+        telegram_id: int,
+        language: str = "ru"
+    ) -> str:
+        """
+        Get formatted subscription status text.
         
-        channel_username = await settings_service.get_channel_username()
-        if not channel_username:
-            channel_username = settings.telegram_channel_username or "@channel"
+        Returns:
+            Formatted string with subscription info
+        """
+        info = await self.get_subscription_info(telegram_id)
         
-        if language == "ru":
-            return (
-                "🔒 <b>Доступ ограничен</b>\n\n"
-                f"Для использования бота подпишитесь на канал {channel_username}.\n\n"
-                "После подписки нажмите «Я подписался»."
-            )
-        return (
-            "🔒 <b>Access Restricted</b>\n\n"
-            f"Subscribe to {channel_username} to use the bot.\n\n"
-            "Click 'I Subscribed' after subscribing."
-        )
-    
-    async def get_subscription_success_message(self, language: str = "ru") -> str:
-        if language == "ru":
-            return "✅ <b>Подписка подтверждена!</b>\n\nМожете пользоваться ботом."
-        return "✅ <b>Subscription confirmed!</b>\n\nYou can now use the bot."
-    
-    async def get_subscription_still_needed_message(self, language: str = "ru") -> str:
-        from bot.services.settings_service import settings_service
+        if info["is_premium"]:
+            expires = info["expires_at"]
+            expires_str = expires.strftime("%d.%m.%Y") if language == "ru" else expires.strftime("%Y-%m-%d")
+            
+            if language == "ru":
+                text = (
+                    "💳 <b>Ваша подписка</b>\n\n"
+                    f"✅ Статус: <b>Премиум</b>\n"
+                    f"📅 Действует до: {expires_str}\n\n"
+                    "🚀 У вас безлимитный доступ ко всем функциям!"
+                )
+            else:
+                text = (
+                    "💳 <b>Your Subscription</b>\n\n"
+                    f"✅ Status: <b>Premium</b>\n"
+                    f"📅 Valid until: {expires_str}\n\n"
+                    "🚀 You have unlimited access to all features!"
+                )
+        else:
+            price = settings.premium_price_rub
+            
+            if language == "ru":
+                text = (
+                    "💳 <b>Ваша подписка</b>\n\n"
+                    f"📝 Статус: <b>Бесплатный</b>\n\n"
+                    "Ограничения бесплатной версии:\n"
+                    "• 10 текстовых запросов/день\n"
+                    "• 5 изображений/день\n"
+                    "• 5 видео/день\n"
+                    "• 5 голосовых/день\n"
+                    "• 3 презентации/день\n\n"
+                    f"💎 <b>Премиум подписка</b> — {price}₽/месяц\n"
+                    "✅ Безлимитный доступ ко всем функциям!\n\n"
+                    "Нажмите кнопку ниже для оформления:"
+                )
+            else:
+                text = (
+                    "💳 <b>Your Subscription</b>\n\n"
+                    f"📝 Status: <b>Free</b>\n\n"
+                    "Free version limits:\n"
+                    "• 10 text requests/day\n"
+                    "• 5 images/day\n"
+                    "• 5 videos/day\n"
+                    "• 5 voice/day\n"
+                    "• 3 presentations/day\n\n"
+                    f"💎 <b>Premium subscription</b> — {price}₽/month\n"
+                    "✅ Unlimited access to all features!\n\n"
+                    "Click the button below to subscribe:"
+                )
         
-        channel_username = await settings_service.get_channel_username()
-        if not channel_username:
-            channel_username = settings.telegram_channel_username or "@channel"
-        
-        if language == "ru":
-            return f"❌ <b>Подписка не найдена</b>\n\nПодпишитесь на {channel_username} и попробуйте снова."
-        return f"❌ <b>Subscription not found</b>\n\nSubscribe to {channel_username} and try again."
+        return text
 
 
-subscription_service = SubscriptionService()
+# Global service instance (renamed to avoid conflict with old file)
+premium_service = SubscriptionService()

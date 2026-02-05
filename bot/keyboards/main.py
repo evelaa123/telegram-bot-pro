@@ -13,25 +13,29 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
     """
     Get main menu Reply keyboard.
-    Layout: 2 columns grid.
+    Layout: 2 columns grid with new features.
     """
     texts = {
         "ru": {
             "text": "💬 Текст",
             "image": "🖼 Изображение",
             "video": "🎬 Видео",
-            "document": "📄 Документ",
+            "voice": "🎤 Голос",
+            "presentation": "📊 Презентация",
+            "assistant": "🗓 Ассистент",
             "settings": "⚙️ Настройки",
-            "limits": "📊 Мои лимиты",
+            "limits": "📊 Лимиты",
             "new_dialog": "🔄 Новый диалог"
         },
         "en": {
             "text": "💬 Text",
             "image": "🖼 Image",
             "video": "🎬 Video",
-            "document": "📄 Document",
+            "voice": "🎤 Voice",
+            "presentation": "📊 Presentation",
+            "assistant": "🗓 Assistant",
             "settings": "⚙️ Settings",
-            "limits": "📊 My Limits",
+            "limits": "📊 Limits",
             "new_dialog": "🔄 New Dialog"
         }
     }
@@ -44,66 +48,57 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
     builder.add(KeyboardButton(text=t["text"]))
     builder.add(KeyboardButton(text=t["image"]))
     
-    # Row 2: Video, Document  
+    # Row 2: Video, Voice
     builder.add(KeyboardButton(text=t["video"]))
-    builder.add(KeyboardButton(text=t["document"]))
+    builder.add(KeyboardButton(text=t["voice"]))
     
-    # Row 3: Settings, Limits
+    # Row 3: Presentation, Assistant
+    builder.add(KeyboardButton(text=t["presentation"]))
+    builder.add(KeyboardButton(text=t["assistant"]))
+    
+    # Row 4: Settings, Limits
     builder.add(KeyboardButton(text=t["settings"]))
     builder.add(KeyboardButton(text=t["limits"]))
     
-    # Row 4: New Dialog (centered)
+    # Row 5: New Dialog (centered)
     builder.add(KeyboardButton(text=t["new_dialog"]))
     
-    # Adjust layout: 2-2-2-1
-    builder.adjust(2, 2, 2, 1)
+    # Adjust layout: 2-2-2-2-1
+    builder.adjust(2, 2, 2, 2, 1)
     
     return builder.as_markup(resize_keyboard=True)
 
 
 def get_settings_keyboard(
-    current_model: str = "gpt-4o-mini",
     current_style: str = "vivid",
     auto_voice: bool = False,
     language: str = "ru",
-    ai_provider: str = "openai",
-    qwen_model: str = "qwen-plus"
+    **kwargs  # Accept but ignore legacy params
 ) -> InlineKeyboardMarkup:
     """
     Get settings inline keyboard.
-    Shows current values and allows toggling.
+    Simplified - no model selection (fixed by TZ).
     """
     texts = {
         "ru": {
-            "provider": "🔌 AI Провайдер",
-            "model": "🤖 Модель GPT",
-            "qwen_model": "🔮 Модель Qwen",
             "style": "🎨 Стиль изображений",
             "voice": "🎤 Авто-обработка голоса",
             "lang": "🌐 Язык",
+            "timezone": "🕐 Часовой пояс",
+            "subscription": "💳 Подписка",
             "back": "◀️ Назад"
         },
         "en": {
-            "provider": "🔌 AI Provider",
-            "model": "🤖 GPT Model",
-            "qwen_model": "🔮 Qwen Model",
             "style": "🎨 Image Style",
             "voice": "🎤 Auto Voice Processing",
             "lang": "🌐 Language",
+            "timezone": "🕐 Timezone",
+            "subscription": "💳 Subscription",
             "back": "◀️ Back"
         }
     }
     
     t = texts.get(language, texts["ru"])
-    
-    # Provider display
-    provider_display = "OpenAI" if ai_provider == "openai" else "Qwen"
-    
-    # Model display (based on provider)
-    if ai_provider == "openai":
-        model_display = "GPT-4o" if current_model == "gpt-4o" else "GPT-4o-mini"
-    else:
-        model_display = qwen_model.replace("qwen-", "Qwen ").title()
     
     # Style display
     style_display = "Vivid" if current_style == "vivid" else "Natural"
@@ -115,30 +110,6 @@ def get_settings_keyboard(
     lang_display = "🇷🇺 RU" if language == "ru" else "🇬🇧 EN"
     
     builder = InlineKeyboardBuilder()
-    
-    # AI Provider selection (NEW)
-    builder.row(
-        InlineKeyboardButton(
-            text=f"{t['provider']}: {provider_display}",
-            callback_data="settings:provider"
-        )
-    )
-    
-    # Show model selection based on current provider
-    if ai_provider == "openai":
-        builder.row(
-            InlineKeyboardButton(
-                text=f"{t['model']}: {model_display}",
-                callback_data="settings:model"
-            )
-        )
-    else:
-        builder.row(
-            InlineKeyboardButton(
-                text=f"{t['qwen_model']}: {model_display}",
-                callback_data="settings:qwen_model"
-            )
-        )
     
     builder.row(
         InlineKeyboardButton(
@@ -160,9 +131,61 @@ def get_settings_keyboard(
     )
     builder.row(
         InlineKeyboardButton(
+            text=t["timezone"],
+            callback_data="settings:timezone"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["subscription"],
+            callback_data="settings:subscription"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
             text=t["back"],
             callback_data="settings:back"
         )
+    )
+    
+    return builder.as_markup()
+
+
+def get_assistant_menu_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
+    """
+    Get assistant features menu keyboard.
+    Includes: Diary, Reminders, Alarms.
+    """
+    texts = {
+        "ru": {
+            "diary": "📔 Ежедневник",
+            "reminders": "🔔 Напоминания",
+            "alarm": "⏰ Будильник",
+            "back": "◀️ Назад"
+        },
+        "en": {
+            "diary": "📔 Diary",
+            "reminders": "🔔 Reminders",
+            "alarm": "⏰ Alarm",
+            "back": "◀️ Back"
+        }
+    }
+    
+    t = texts.get(language, texts["ru"])
+    
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(text=t["diary"], callback_data="assistant:diary")
+    )
+    builder.row(
+        InlineKeyboardButton(text=t["reminders"], callback_data="assistant:reminders")
+    )
+    builder.row(
+        InlineKeyboardButton(text=t["alarm"], callback_data="assistant:alarm")
+    )
+    builder.row(
+        InlineKeyboardButton(text=t["back"], callback_data="assistant:back")
     )
     
     return builder.as_markup()

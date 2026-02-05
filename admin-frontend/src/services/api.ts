@@ -100,7 +100,18 @@ export const statsApi = {
   daily: (startDate?: string, endDate?: string) =>
     api.get('/stats/daily', { params: { start_date: startDate, end_date: endDate } }),
   recent: (limit?: number) => api.get('/stats/recent', { params: { limit } }),
-  costs: (days?: number) => api.get('/stats/costs', { params: { days } })
+  costs: (days?: number) => api.get('/stats/costs', { params: { days } }),
+  // API Usage endpoints
+  apiUsage: (dailyBudget?: number, monthlyBudget?: number) =>
+    api.get('/stats/api-usage', { params: { daily_budget_usd: dailyBudget, monthly_budget_usd: monthlyBudget } }),
+  apiUsageDaily: (targetDate?: string) =>
+    api.get('/stats/api-usage/daily', { params: { target_date: targetDate } }),
+  apiUsageMonthly: (year?: number, month?: number) =>
+    api.get('/stats/api-usage/monthly', { params: { year, month } }),
+  apiUsageAlerts: (dailyBudget?: number, monthlyBudget?: number) =>
+    api.get('/stats/api-usage/alerts', { params: { daily_budget_usd: dailyBudget, monthly_budget_usd: monthlyBudget } }),
+  apiUsageByUser: (userId: number, days?: number) =>
+    api.get(`/stats/api-usage/user/${userId}`, { params: { days } })
 };
 
 export const settingsApi = {

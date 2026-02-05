@@ -9,6 +9,7 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/authStore';
 
@@ -39,6 +40,11 @@ function AdminLayout() {
       key: '/tasks',
       icon: <OrderedListOutlined />,
       label: 'Tasks',
+    },
+    {
+      key: '/api-usage',
+      icon: <ApiOutlined />,
+      label: 'API Usage',
     },
     {
       key: '/settings',

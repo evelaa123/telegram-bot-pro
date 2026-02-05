@@ -23,11 +23,18 @@ class Settings(BaseSettings):
     telegram_channel_id: int = Field(0, description="Channel ID for subscription check")
     telegram_channel_username: str = Field("@channel", description="Channel username for links")
     
-    # OpenAI Configuration
-    openai_api_key: str = Field("", description="OpenAI API Key")
+    # CometAPI Configuration (Main AI provider)
+    cometapi_api_key: str = Field("", description="CometAPI API Key")
     
-    # Qwen Configuration (Alibaba Cloud DashScope)
-    qwen_api_key: Optional[str] = Field(None, description="Qwen API Key (DashScope)")
+    # GigaChat Configuration (For presentations)
+    gigachat_credentials: Optional[str] = Field(None, description="GigaChat Base64 encoded credentials")
+    gigachat_scope: str = Field("GIGACHAT_API_PERS", description="GigaChat API scope")
+    
+    # OpenAI Configuration (Legacy/Fallback)
+    openai_api_key: str = Field("", description="OpenAI API Key (fallback)")
+    
+    # Qwen Configuration (Alibaba Cloud DashScope) - now via CometAPI
+    qwen_api_key: Optional[str] = Field(None, description="Qwen API Key (DashScope) - Legacy")
     
     # Database
     database_url: str = Field(
@@ -51,28 +58,44 @@ class Settings(BaseSettings):
     environment: str = Field("development")
     debug: bool = Field(True)
     
-    # Rate Limits (per user per day)
-    default_text_limit: int = Field(50)
-    default_image_limit: int = Field(10)
-    default_video_limit: int = Field(3)
-    default_voice_limit: int = Field(20)
+    # Rate Limits (per user per day) - FREE tier
+    default_text_limit: int = Field(10)
+    default_image_limit: int = Field(5)
+    default_video_limit: int = Field(5)
+    default_voice_limit: int = Field(5)
     default_document_limit: int = Field(10)
+    default_presentation_limit: int = Field(3)
     
-    # OpenAI Models
-    default_gpt_model: str = Field("gpt-4o-mini")
+    # Premium subscription price (RUB per month)
+    premium_price_rub: int = Field(300)
+    
+    # Payment provider configuration
+    payment_provider: str = Field("yookassa", description="Payment provider: yookassa, robokassa")
+    yookassa_shop_id: Optional[str] = Field(None, description="YooKassa Shop ID")
+    yookassa_secret_key: Optional[str] = Field(None, description="YooKassa Secret Key")
+    
+    # AI Models (via CometAPI)
+    # Text generation model
+    default_text_model: str = Field("qwen-3-max")
+    # Image generation model
     default_image_model: str = Field("dall-e-3")
+    # Video generation model
     default_video_model: str = Field("sora-2")
+    # Speech recognition model
     default_whisper_model: str = Field("whisper-1")
+    # GigaChat model for presentations
+    default_gigachat_model: str = Field("GigaChat-2-Max")
     
-    # Qwen Models
+    # Legacy OpenAI model settings (for backwards compatibility)
+    default_gpt_model: str = Field("gpt-4o-mini")
     default_qwen_model: str = Field("qwen-plus")
     default_qwen_vl_model: str = Field("qwen-vl-plus")
     default_qwen_image_model: str = Field("wanx-v1")
     default_qwen_tts_model: str = Field("cosyvoice-v1")
     default_qwen_asr_model: str = Field("paraformer-realtime-v2")
     
-    # Default AI Provider (openai or qwen)
-    default_ai_provider: str = Field("openai")
+    # Default AI Provider (cometapi is the main provider)
+    default_ai_provider: str = Field("cometapi")
     
     # Streaming Configuration
     stream_update_interval_ms: int = Field(500)
@@ -140,7 +163,18 @@ class Settings(BaseSettings):
             "video": self.default_video_limit,
             "voice": self.default_voice_limit,
             "document": self.default_document_limit,
+            "presentation": self.default_presentation_limit,
         }
+    
+    @property
+    def cometapi_configured(self) -> bool:
+        """Check if CometAPI is configured."""
+        return bool(self.cometapi_api_key and len(self.cometapi_api_key) > 10)
+    
+    @property
+    def gigachat_configured(self) -> bool:
+        """Check if GigaChat is configured."""
+        return bool(self.gigachat_credentials and len(self.gigachat_credentials) > 10)
     
     @property
     def qwen_configured(self) -> bool:

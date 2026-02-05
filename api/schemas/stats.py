@@ -89,3 +89,73 @@ class CostAnalysis(BaseModel):
     cost_by_type: Dict[str, float]
     daily_average_usd: float
     monthly_projection_usd: float
+
+
+# API Usage Tracking Schemas
+class ProviderStats(BaseModel):
+    """Statistics for a single provider."""
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    cost_rub: float
+    avg_duration_ms: float
+
+
+class ModelStats(BaseModel):
+    """Statistics for a single model."""
+    requests: int
+    cost_usd: float
+
+
+class DailyUsageData(BaseModel):
+    """Daily usage data point."""
+    date: str
+    requests: int
+    cost_usd: float
+    cost_rub: float
+
+
+class APIUsageDailySummary(BaseModel):
+    """Daily API usage summary."""
+    date: str
+    total_requests: int
+    total_cost_usd: float
+    total_cost_rub: float
+    error_count: int
+    error_rate: float
+    by_provider: Dict[str, ProviderStats]
+    by_model: Dict[str, ModelStats]
+
+
+class APIUsageMonthlySummary(BaseModel):
+    """Monthly API usage summary."""
+    year: int
+    month: int
+    total_requests: int
+    total_cost_usd: float
+    total_cost_rub: float
+    projected_monthly_usd: float
+    projected_monthly_rub: float
+    days_elapsed: int
+    days_in_month: int
+    daily_data: List[DailyUsageData]
+    by_provider: Dict[str, ModelStats]
+
+
+class CostAlert(BaseModel):
+    """Cost alert."""
+    type: str
+    severity: str
+    message: str
+    current: Optional[float] = None
+    projected: Optional[float] = None
+    budget: Optional[float] = None
+    error_rate: Optional[float] = None
+
+
+class APIUsageOverview(BaseModel):
+    """API usage overview for admin dashboard."""
+    daily: APIUsageDailySummary
+    monthly: APIUsageMonthlySummary
+    alerts: List[CostAlert]
