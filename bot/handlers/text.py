@@ -101,13 +101,10 @@ async def handle_text_message(message: Message):
     # Get user settings
     user_settings = await user_service.get_user_settings(user.id)
     language = user_settings.get("language", "ru")
-    ai_provider = user_settings.get("ai_provider", "openai")
     
-    # Get model based on provider
-    if ai_provider == "qwen":
-        model = user_settings.get("qwen_model", settings.default_qwen_model)
-    else:
-        model = user_settings.get("gpt_model", settings.default_gpt_model)
+    # Always use cometapi with qwen-3-max for text generation
+    ai_provider = "cometapi"
+    model = settings.default_text_model  # qwen-3-max
     
     # Check limits
     has_limit, current, max_limit = await limit_service.check_limit(

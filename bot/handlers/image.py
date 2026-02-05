@@ -45,37 +45,16 @@ async def cmd_image(message: Message):
             )
         return
     
-    # Get user's AI provider
-    user_settings = await user_service.get_user_settings(user.id)
-    ai_provider = user_settings.get("ai_provider", "openai")
-    
-    # Check if Qwen is available for images
-    qwen_available = ai_service.is_provider_available("qwen", "image")
-    
     if language == "ru":
-        provider_info = ""
-        if ai_provider == "qwen" and qwen_available:
-            provider_info = "\n🔮 Используется: Qwen (Wanx)"
-        else:
-            provider_info = "\n🤖 Используется: OpenAI (DALL-E 3)"
-        
         text = (
             f"🖼 <b>Генерация изображений</b>\n\n"
-            f"Осталось сегодня: {max_limit - current} из {max_limit}"
-            f"{provider_info}\n\n"
+            f"Осталось сегодня: {max_limit - current} из {max_limit}\n\n"
             "Выберите размер изображения:"
         )
     else:
-        provider_info = ""
-        if ai_provider == "qwen" and qwen_available:
-            provider_info = "\n🔮 Using: Qwen (Wanx)"
-        else:
-            provider_info = "\n🤖 Using: OpenAI (DALL-E 3)"
-        
         text = (
             f"🖼 <b>Image Generation</b>\n\n"
-            f"Remaining today: {max_limit - current} of {max_limit}"
-            f"{provider_info}\n\n"
+            f"Remaining today: {max_limit - current} of {max_limit}\n\n"
             "Choose image size:"
         )
     

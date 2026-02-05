@@ -12,7 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from bot.services.user_service import user_service
 from bot.keyboards.main import get_assistant_menu_keyboard
 from bot.keyboards.inline import InlineKeyboardBuilder, InlineKeyboardButton
-from database.connection import async_session
+from database.connection import async_session_maker as async_session
 from database.models import DiaryEntry, Reminder, ReminderType
 from sqlalchemy import select, and_, delete
 from sqlalchemy.orm import selectinload

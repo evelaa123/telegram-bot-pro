@@ -212,8 +212,8 @@ async def process_presentation_topic(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=get_slides_config_keyboard(language, style))
 
 
-def get_slides_config_keyboard(language: str, style: str):
-    """Get slides configuration keyboard."""
+def get_slides_config_keyboard(language: str, style: str, slides: int = 5, images: bool = True):
+    """Get slides configuration keyboard with current selections marked."""
     texts = {
         "ru": {
             "slides_5": "5 слайдов",
@@ -221,6 +221,7 @@ def get_slides_config_keyboard(language: str, style: str):
             "slides_10": "10 слайдов",
             "with_images": "🖼 С картинками",
             "no_images": "📝 Без картинок",
+            "generate": "✅ Создать презентацию",
             "cancel": "❌ Отмена"
         },
         "en": {
@@ -229,6 +230,7 @@ def get_slides_config_keyboard(language: str, style: str):
             "slides_10": "10 slides",
             "with_images": "🖼 With images",
             "no_images": "📝 No images",
+            "generate": "✅ Create presentation",
             "cancel": "❌ Cancel"
         }
     }
@@ -236,17 +238,29 @@ def get_slides_config_keyboard(language: str, style: str):
     t = texts.get(language, texts["ru"])
     builder = InlineKeyboardBuilder()
     
-    # Slides count
+    # Slides count (mark selected)
+    s5 = "✓ " + t["slides_5"] if slides == 5 else t["slides_5"]
+    s7 = "✓ " + t["slides_7"] if slides == 7 else t["slides_7"]
+    s10 = "✓ " + t["slides_10"] if slides == 10 else t["slides_10"]
+    
     builder.row(
-        InlineKeyboardButton(text=t["slides_5"], callback_data=f"pres:config:5:{style}:1"),
-        InlineKeyboardButton(text=t["slides_7"], callback_data=f"pres:config:7:{style}:1"),
-        InlineKeyboardButton(text=t["slides_10"], callback_data=f"pres:config:10:{style}:1")
+        InlineKeyboardButton(text=s5, callback_data=f"pres:slides:5:{style}:{1 if images else 0}"),
+        InlineKeyboardButton(text=s7, callback_data=f"pres:slides:7:{style}:{1 if images else 0}"),
+        InlineKeyboardButton(text=s10, callback_data=f"pres:slides:10:{style}:{1 if images else 0}")
     )
     
-    # Images option
+    # Images option (mark selected)
+    img_yes = "✓ " + t["with_images"] if images else t["with_images"]
+    img_no = "✓ " + t["no_images"] if not images else t["no_images"]
+    
     builder.row(
-        InlineKeyboardButton(text=t["with_images"], callback_data=f"pres:config:5:{style}:1"),
-        InlineKeyboardButton(text=t["no_images"], callback_data=f"pres:config:5:{style}:0")
+        InlineKeyboardButton(text=img_yes, callback_data=f"pres:images:{slides}:{style}:1"),
+        InlineKeyboardButton(text=img_no, callback_data=f"pres:images:{slides}:{style}:0")
+    )
+    
+    # Generate button
+    builder.row(
+        InlineKeyboardButton(text=t["generate"], callback_data=f"pres:generate:{slides}:{style}:{1 if images else 0}")
     )
     
     builder.row(
@@ -256,7 +270,85 @@ def get_slides_config_keyboard(language: str, style: str):
     return builder.as_markup()
 
 
-@router.callback_query(F.data.startswith("pres:config:"))
+@router.callback_query(F.data.startswith("pres:slides:"))
+async def callback_change_slides(callback: CallbackQuery, state: FSMContext):
+    """Handle slides count change."""
+    parts = callback.data.split(":")
+    slides_count = int(parts[2])
+    style = parts[3]
+    include_images = parts[4] == "1"
+    
+    await state.update_data(slides=slides_count, style=style, images=include_images)
+    
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    data = await state.get_data()
+    topic = data.get("topic", "Presentation")
+    
+    if language == "ru":
+        text = (
+            f"📊 <b>Настройка презентации</b>\n\n"
+            f"📝 Тема: {topic}\n"
+            f"🎨 Стиль: {style}\n"
+            f"📊 Слайдов: {slides_count}\n"
+            f"🖼 Картинки: {'Да' if include_images else 'Нет'}"
+        )
+    else:
+        text = (
+            f"📊 <b>Presentation Setup</b>\n\n"
+            f"📝 Topic: {topic}\n"
+            f"🎨 Style: {style}\n"
+            f"📊 Slides: {slides_count}\n"
+            f"🖼 Images: {'Yes' if include_images else 'No'}"
+        )
+    
+    await callback.message.edit_text(
+        text, 
+        reply_markup=get_slides_config_keyboard(language, style, slides_count, include_images)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pres:images:"))
+async def callback_change_images(callback: CallbackQuery, state: FSMContext):
+    """Handle images toggle."""
+    parts = callback.data.split(":")
+    slides_count = int(parts[2])
+    style = parts[3]
+    include_images = parts[4] == "1"
+    
+    await state.update_data(slides=slides_count, style=style, images=include_images)
+    
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    data = await state.get_data()
+    topic = data.get("topic", "Presentation")
+    
+    if language == "ru":
+        text = (
+            f"📊 <b>Настройка презентации</b>\n\n"
+            f"📝 Тема: {topic}\n"
+            f"🎨 Стиль: {style}\n"
+            f"📊 Слайдов: {slides_count}\n"
+            f"🖼 Картинки: {'Да' if include_images else 'Нет'}"
+        )
+    else:
+        text = (
+            f"📊 <b>Presentation Setup</b>\n\n"
+            f"📝 Topic: {topic}\n"
+            f"🎨 Style: {style}\n"
+            f"📊 Slides: {slides_count}\n"
+            f"🖼 Images: {'Yes' if include_images else 'No'}"
+        )
+    
+    await callback.message.edit_text(
+        text, 
+        reply_markup=get_slides_config_keyboard(language, style, slides_count, include_images)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pres:generate:"))
 async def callback_start_generation(callback: CallbackQuery, state: FSMContext):
     """Start presentation generation with selected configuration."""
     parts = callback.data.split(":")

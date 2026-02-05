@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.dml.color import RgbColor
+from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 
@@ -31,32 +31,32 @@ class PresentationService:
     # Color schemes for different styles
     COLOR_SCHEMES = {
         "business": {
-            "primary": RgbColor(0, 51, 102),      # Dark blue
-            "secondary": RgbColor(0, 102, 153),   # Medium blue
-            "accent": RgbColor(255, 153, 0),      # Orange
-            "text": RgbColor(51, 51, 51),         # Dark gray
-            "background": RgbColor(255, 255, 255) # White
+            "primary": RGBColor(0, 51, 102),      # Dark blue
+            "secondary": RGBColor(0, 102, 153),   # Medium blue
+            "accent": RGBColor(255, 153, 0),      # Orange
+            "text": RGBColor(51, 51, 51),         # Dark gray
+            "background": RGBColor(255, 255, 255) # White
         },
         "creative": {
-            "primary": RgbColor(102, 45, 145),    # Purple
-            "secondary": RgbColor(255, 102, 102), # Coral
-            "accent": RgbColor(0, 204, 153),      # Teal
-            "text": RgbColor(51, 51, 51),
-            "background": RgbColor(255, 255, 255)
+            "primary": RGBColor(102, 45, 145),    # Purple
+            "secondary": RGBColor(255, 102, 102), # Coral
+            "accent": RGBColor(0, 204, 153),      # Teal
+            "text": RGBColor(51, 51, 51),
+            "background": RGBColor(255, 255, 255)
         },
         "educational": {
-            "primary": RgbColor(0, 128, 0),       # Green
-            "secondary": RgbColor(0, 102, 204),   # Blue
-            "accent": RgbColor(255, 204, 0),      # Yellow
-            "text": RgbColor(51, 51, 51),
-            "background": RgbColor(255, 255, 255)
+            "primary": RGBColor(0, 128, 0),       # Green
+            "secondary": RGBColor(0, 102, 204),   # Blue
+            "accent": RGBColor(255, 204, 0),      # Yellow
+            "text": RGBColor(51, 51, 51),
+            "background": RGBColor(255, 255, 255)
         },
         "modern": {
-            "primary": RgbColor(33, 33, 33),      # Dark
-            "secondary": RgbColor(76, 175, 80),   # Green
-            "accent": RgbColor(255, 193, 7),      # Amber
-            "text": RgbColor(33, 33, 33),
-            "background": RgbColor(250, 250, 250)
+            "primary": RGBColor(33, 33, 33),      # Dark
+            "secondary": RGBColor(76, 175, 80),   # Green
+            "accent": RGBColor(255, 193, 7),      # Amber
+            "text": RGBColor(33, 33, 33),
+            "background": RGBColor(250, 250, 250)
         }
     }
     
@@ -200,7 +200,7 @@ class PresentationService:
         self,
         prs: Presentation,
         slide_data: Dict[str, Any],
-        colors: Dict[str, RgbColor],
+        colors: Dict[str, RGBColor],
         image_bytes: Optional[bytes],
         is_title_slide: bool,
         is_last_slide: bool
@@ -248,7 +248,7 @@ class PresentationService:
         title_frame.paragraphs[0].text = slide_data.get("title", "Презентация")
         title_frame.paragraphs[0].font.size = Pt(54)
         title_frame.paragraphs[0].font.bold = True
-        title_frame.paragraphs[0].font.color.rgb = RgbColor(255, 255, 255)
+        title_frame.paragraphs[0].font.color.rgb = RGBColor(255, 255, 255)
         title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
         
         # Subtitle if available
@@ -260,7 +260,7 @@ class PresentationService:
             sub_frame = subtitle_box.text_frame
             sub_frame.paragraphs[0].text = slide_data["content"][0] if isinstance(slide_data["content"], list) else str(slide_data["content"])
             sub_frame.paragraphs[0].font.size = Pt(24)
-            sub_frame.paragraphs[0].font.color.rgb = RgbColor(255, 255, 255)
+            sub_frame.paragraphs[0].font.color.rgb = RGBColor(255, 255, 255)
             sub_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
     
     def _create_content_slide(self, slide, slide_data, colors, prs, image_bytes):
@@ -284,7 +284,7 @@ class PresentationService:
         title_frame.paragraphs[0].text = slide_data.get("title", "")
         title_frame.paragraphs[0].font.size = Pt(32)
         title_frame.paragraphs[0].font.bold = True
-        title_frame.paragraphs[0].font.color.rgb = RgbColor(255, 255, 255)
+        title_frame.paragraphs[0].font.color.rgb = RGBColor(255, 255, 255)
         
         # Content area dimensions depend on image presence
         if image_bytes:
@@ -359,7 +359,7 @@ class PresentationService:
         title_frame.paragraphs[0].text = slide_data.get("title", "Спасибо за внимание!")
         title_frame.paragraphs[0].font.size = Pt(48)
         title_frame.paragraphs[0].font.bold = True
-        title_frame.paragraphs[0].font.color.rgb = RgbColor(255, 255, 255)
+        title_frame.paragraphs[0].font.color.rgb = RGBColor(255, 255, 255)
         title_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
         
         # Subtitle

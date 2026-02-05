@@ -54,13 +54,13 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """
     texts = {
         "ru": {
-            "sora2": "⚡ Sora 2 (быстро)",
-            "sora2_pro": "🎬 Sora 2 Pro (качество)",
+            "sora2": "⚡ Быстрый режим",
+            "sora2_pro": "🎬 Высокое качество",
             "cancel": "❌ Отмена"
         },
         "en": {
-            "sora2": "⚡ Sora 2 (Fast)",
-            "sora2_pro": "🎬 Sora 2 Pro (Quality)",
+            "sora2": "⚡ Fast Mode",
+            "sora2_pro": "🎬 High Quality",
             "cancel": "❌ Cancel"
         }
     }
