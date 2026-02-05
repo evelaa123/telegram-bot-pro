@@ -24,11 +24,11 @@ class BotSettings(BaseModel):
 
 class ApiSettings(BaseModel):
     """API configuration settings."""
-    default_gpt_model: str = "gpt-4o-mini"
-    default_image_model: str = "dall-e-3"
+    default_gpt_model: str = "qwen-3-max"
+    default_image_model: str = "qwen-image"
     default_video_model: str = "sora-2"
-    default_qwen_model: str = "qwen-plus"
-    default_ai_provider: Literal["openai", "qwen"] = "openai"
+    default_qwen_model: str = "qwen-3-max"
+    default_ai_provider: Literal["openai", "qwen", "cometapi"] = "cometapi"
     max_context_messages: int = 20
     context_ttl_seconds: int = 1800
     openai_timeout: int = 120

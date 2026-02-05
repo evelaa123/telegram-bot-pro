@@ -30,6 +30,13 @@ class SubscriptionService:
     # YooKassa API
     YOOKASSA_API_URL = "https://api.yookassa.ru/v3"
     
+    async def check_subscription(self, telegram_id: int) -> bool:
+        """
+        Check if user has active subscription (alias for check_premium).
+        Used by auth middleware.
+        """
+        return await self.check_premium(telegram_id)
+    
     async def check_premium(self, telegram_id: int) -> bool:
         """
         Check if user has active premium subscription.
@@ -363,5 +370,6 @@ class SubscriptionService:
         return text
 
 
-# Global service instance (renamed to avoid conflict with old file)
+# Global service instances
 premium_service = SubscriptionService()
+subscription_service = premium_service  # Alias for compatibility

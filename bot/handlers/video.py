@@ -45,27 +45,27 @@ async def cmd_video(message: Message):
     
     if language == "ru":
         text = (
-            "🎬 <b>Генерация видео (Sora)</b>\n\n"
+            "🎬 <b>Генерация видео</b>\n\n"
             f"Осталось сегодня: {max_limit - current} из {max_limit}\n\n"
-            "<b>Модели:</b>\n"
-            "• <b>Sora 2</b> — быстрая генерация (1-3 мин)\n"
-            "• <b>Sora 2 Pro</b> — высокое качество (5-10 мин)\n\n"
+            "<b>Режимы:</b>\n"
+            "• <b>Быстрый</b> — генерация за 1-3 мин\n"
+            "• <b>Качество</b> — высокое качество (5-10 мин)\n\n"
             "⚠️ <b>Ограничения:</b>\n"
             "• Нельзя создавать реальных людей\n"
             "• Нельзя использовать копирайтный контент\n\n"
-            "Выберите модель:"
+            "Выберите режим:"
         )
     else:
         text = (
-            "🎬 <b>Video Generation (Sora)</b>\n\n"
+            "🎬 <b>Video Generation</b>\n\n"
             f"Remaining today: {max_limit - current} of {max_limit}\n\n"
-            "<b>Models:</b>\n"
-            "• <b>Sora 2</b> — fast generation (1-3 min)\n"
-            "• <b>Sora 2 Pro</b> — high quality (5-10 min)\n\n"
+            "<b>Modes:</b>\n"
+            "• <b>Fast</b> — generation in 1-3 min\n"
+            "• <b>Quality</b> — high quality (5-10 min)\n\n"
             "⚠️ <b>Restrictions:</b>\n"
             "• Cannot create real people\n"
             "• Cannot use copyrighted content\n\n"
-            "Choose a model:"
+            "Choose a mode:"
         )
     
     await message.answer(text, reply_markup=get_video_model_keyboard(language))
