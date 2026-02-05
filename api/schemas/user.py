@@ -19,6 +19,11 @@ class UserResponse(BaseModel):
     updated_at: datetime
     last_active_at: Optional[datetime] = None
     
+    # Subscription info
+    subscription_type: str = "free"  # free or premium
+    subscription_expires_at: Optional[datetime] = None
+    has_active_subscription: bool = False
+    
     # Computed fields
     total_requests: int = 0
     
@@ -42,12 +47,17 @@ class UserUpdate(BaseModel):
 
 
 class UserLimitsUpdate(BaseModel):
-    """User limits update request."""
-    text: Optional[int] = Field(None, ge=0)
-    image: Optional[int] = Field(None, ge=0)
-    video: Optional[int] = Field(None, ge=0)
-    voice: Optional[int] = Field(None, ge=0)
-    document: Optional[int] = Field(None, ge=0)
+    """
+    User limits update request.
+    Set to -1 for unlimited.
+    Set to 0 to use global defaults.
+    Set to positive number for specific limit.
+    """
+    text: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    image: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    video: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    voice: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    document: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
 
 
 class UserRequestHistory(BaseModel):

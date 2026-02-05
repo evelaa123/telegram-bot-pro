@@ -2,6 +2,7 @@
 Users router.
 Handles user management endpoints.
 """
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 
@@ -84,16 +85,40 @@ async def list_users(
         result = await session.execute(query)
         users = result.scalars().all()
         
-        # Get request counts
+        # Get request counts and build responses
         user_responses = []
+        from datetime import timezone
+        now = datetime.now(timezone.utc) if hasattr(datetime, 'now') else __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+        
         for user in users:
             count_result = await session.execute(
                 select(func.count(Request.id)).where(Request.user_id == user.id)
             )
             request_count = count_result.scalar() or 0
             
-            user_data = UserResponse.model_validate(user)
-            user_data.total_requests = request_count
+            # Build user response with subscription info
+            has_active = False
+            if user.subscription_type.value == "premium" and user.subscription_expires_at:
+                has_active = user.subscription_expires_at > now
+            
+            user_data = UserResponse(
+                id=user.id,
+                telegram_id=user.telegram_id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                language_code=user.language_code,
+                is_blocked=user.is_blocked,
+                custom_limits=user.custom_limits,
+                settings=user.settings,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+                last_active_at=user.last_active_at,
+                subscription_type=user.subscription_type.value,
+                subscription_expires_at=user.subscription_expires_at,
+                has_active_subscription=has_active,
+                total_requests=request_count
+            )
             user_responses.append(user_data)
         
         total_pages = (total + page_size - 1) // page_size

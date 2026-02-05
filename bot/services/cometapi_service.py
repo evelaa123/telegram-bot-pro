@@ -26,15 +26,38 @@ class CometAPIService:
     
     @property
     def BASE_URL(self) -> str:
-        """Get CometAPI base URL from settings (supports runtime changes)."""
+        """Get CometAPI base URL from settings (supports runtime changes via admin panel)."""
+        # First check if there's a cached base URL from DB settings
+        if hasattr(self, '_cached_base_url') and self._cached_base_url:
+            return self._cached_base_url
         return getattr(settings, 'cometapi_base_url', 'https://api.cometapi.com/v1')
+    
+    def set_base_url(self, url: str):
+        """Set cached base URL (called when admin updates settings)."""
+        self._cached_base_url = url
+        self.reset_client()  # Force client reset to use new URL
+        logger.info("CometAPI base URL updated", base_url=url)
     
     # Model names in CometAPI
     MODELS = {
         "text": "qwen-3-max",  # Qwen 3 Max for text generation
         "image": "dall-e-3",   # DALL-E 3 through CometAPI
-        "video": "sora-2",     # Sora 2 through CometAPI
+        "video": "sora-2",     # Sora 2 (4/8/12 sec)
         "whisper": "whisper-1",  # Whisper for speech recognition
+    }
+    
+    # Video models configuration
+    # sora-2: durations 4, 8, 12 seconds
+    # sora-2-pro: durations 4, 8, 12 seconds (higher quality)
+    VIDEO_MODELS = {
+        "sora-2": {
+            "durations": [4, 8, 12],
+            "per_second": 0.05
+        },
+        "sora-2-pro": {
+            "durations": [4, 8, 12],
+            "per_second": 0.10
+        }
     }
     
     # Pricing estimates (per 1K tokens or per request)
@@ -47,10 +70,7 @@ class CometAPIService:
             "1024x1792": 0.08
         },
         "whisper-1": 0.006,  # per minute
-        # CometAPI custom format pricing (fixed rates)
-        "sora-2-all": 0.08,  # Fixed $0.08 per generation
-        "sora-2-pro-all": 0.80,  # Fixed $0.80 per generation
-        # Legacy pricing (per second)
+        # Video pricing (per second)
         "sora-2": {"per_second": 0.05},
         "sora-2-pro": {"per_second": 0.10}
     }
@@ -317,44 +337,48 @@ class CometAPIService:
                 raise Exception(f"Failed to download image: HTTP {response.status}")
     
     # =========================================
-    # Video Generation (CometAPI Custom Format)
+    # Video Generation (CometAPI Official Format)
     # =========================================
     
     async def create_video(
         self,
         prompt: str,
-        model: str = "sora-2-all",
-        duration: int = 10,
-        size: str = "1280x720"
+        model: str = "sora-2",
+        duration: int = 4,
+        size: str = "720x1280",
+        input_reference: bytes = None
     ) -> Dict[str, Any]:
         """
-        Create video generation task using CometAPI custom format.
+        Create video generation task using CometAPI.
+        
+        Supported models:
+        - sora-2: Fast mode (4/8/12 seconds)
+        - sora-2-pro: High quality (4/8/12 seconds)
         
         Args:
             prompt: Video description
-            model: sora-2-all or sora-2-pro-all
-            duration: Duration in seconds (10, 15, or 25 for pro)
+            model: sora-2 or sora-2-pro
+            duration: Duration in seconds (4, 8, or 12)
             size: Resolution (720x1280, 1280x720, 1024x1792, 1792x1024)
+            input_reference: Optional reference image bytes
             
         Returns:
             Video task info with video_id
         """
-        # Map old model names to new CometAPI custom format
-        model_map = {
-            "sora-2": "sora-2-all",
-            "sora-2-pro": "sora-2-pro-all"
-        }
-        actual_model = model_map.get(model, model)
+        # Ensure model is valid
+        if model not in self.VIDEO_MODELS:
+            model = "sora-2"
         
-        # Valid durations for each model
-        if actual_model == "sora-2-all":
-            valid_durations = [10, 15]
-            if duration not in valid_durations:
-                duration = 10
-        else:  # sora-2-pro-all
-            valid_durations = [10, 15, 25]
-            if duration not in valid_durations:
-                duration = 10
+        # Validate duration for the selected model
+        valid_durations = self.VIDEO_MODELS[model]["durations"]
+        if duration not in valid_durations:
+            # Map to nearest valid duration
+            if duration <= 4:
+                duration = 4
+            elif duration <= 8:
+                duration = 8
+            else:
+                duration = 12
         
         api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
         
@@ -362,9 +386,18 @@ class CometAPIService:
             # Use multipart/form-data as per CometAPI docs
             form_data = aiohttp.FormData()
             form_data.add_field('prompt', prompt)
-            form_data.add_field('model', actual_model)
+            form_data.add_field('model', model)
             form_data.add_field('seconds', str(duration))
             form_data.add_field('size', size)
+            
+            # Add reference image if provided
+            if input_reference:
+                form_data.add_field(
+                    'input_reference',
+                    input_reference,
+                    filename='reference.png',
+                    content_type='image/png'
+                )
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -382,28 +415,29 @@ class CometAPIService:
             result = {
                 "video_id": data.get("id"),
                 "status": data.get("status", "queued"),
-                "model": actual_model,
+                "model": model,
                 "duration": duration,
                 "size": size,
                 "provider": "cometapi"
             }
             
-            # Calculate cost (fixed rate for CometAPI custom format)
-            cost = self.PRICING.get(actual_model, 0.08)
+            # Calculate cost (per second pricing)
+            pricing = self.PRICING.get(model, self.PRICING["sora-2"])
+            cost = duration * pricing.get("per_second", 0.05)
             
             # Log API usage
             try:
                 await usage_tracking_service.log_api_call(
                     provider="cometapi",
-                    model=actual_model,
+                    model=model,
                     endpoint="video",
-                    cost_usd=Decimal(str(cost)),
+                    cost_usd=Decimal(str(round(cost, 4))),
                     success=True
                 )
             except Exception as log_error:
                 logger.warning("Failed to log API usage", error=str(log_error))
             
-            logger.info("Video creation started", video_id=result["video_id"], model=actual_model)
+            logger.info("Video creation started", video_id=result["video_id"], model=model, duration=duration)
             return result
             
         except Exception as e:
@@ -411,7 +445,7 @@ class CometAPIService:
             try:
                 await usage_tracking_service.log_api_call(
                     provider="cometapi",
-                    model=actual_model,
+                    model=model,
                     endpoint="video",
                     success=False,
                     error_message=str(e)

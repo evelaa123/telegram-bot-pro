@@ -3,6 +3,7 @@ Text message handler.
 Handles GPT text generation with streaming.
 """
 import asyncio
+import re
 import time
 from aiogram import Router, F
 from aiogram.types import Message
@@ -12,6 +13,7 @@ from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
 from bot.keyboards.main import get_main_menu_keyboard
+from bot.keyboards.inline import get_subscription_keyboard
 from database.redis_client import redis_client
 from database.models import RequestType, RequestStatus
 from config import settings
@@ -19,6 +21,36 @@ import structlog
 
 logger = structlog.get_logger()
 router = Router()
+
+
+def convert_markdown_to_html(text: str) -> str:
+    """
+    Convert Markdown formatting to Telegram HTML.
+    Handles: bold, italic, code, code blocks.
+    """
+    # Escape HTML special characters first (except those we'll use for tags)
+    text = text.replace('&', '&amp;')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
+    
+    # Code blocks (```code```) - must be first to avoid conflicts
+    text = re.sub(r'```(\w*)\n?(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
+    
+    # Inline code (`code`)
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    
+    # Bold (**text** or __text__)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__([^_]+)__', r'<b>\1</b>', text)
+    
+    # Italic (*text* or _text_) - be careful not to match already processed bold
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<i>\1</i>', text)
+    
+    # Strikethrough (~~text~~)
+    text = re.sub(r'~~([^~]+)~~', r'<s>\1</s>', text)
+    
+    return text
 
 
 @router.message(F.text)
@@ -97,6 +129,12 @@ async def handle_text_message(message: Message):
                     language=language
                 )
                 return
+        
+        # Обработка сообщения в поддержку
+        elif state == "support_message":
+            from bot.handlers.support import handle_support_message
+            await handle_support_message(message, user.id)
+            return
     
     # ============================================
     # ОБЫЧНАЯ ГЕНЕРАЦИЯ ТЕКСТА (GPT)
@@ -119,12 +157,18 @@ async def handle_text_message(message: Message):
         if language == "ru":
             await message.answer(
                 f"⚠️ Вы достигли лимита текстовых запросов на сегодня ({max_limit}).\n"
-                "Лимиты обновятся в полночь UTC."
+                "Лимиты обновятся в полночь UTC.\n\n"
+                "💎 <b>Хотите больше запросов?</b>\n"
+                "Оформите подписку для увеличения лимитов!",
+                reply_markup=get_subscription_keyboard(language)
             )
         else:
             await message.answer(
                 f"⚠️ You've reached your daily text request limit ({max_limit}).\n"
-                "Limits reset at midnight UTC."
+                "Limits reset at midnight UTC.\n\n"
+                "💎 <b>Want more requests?</b>\n"
+                "Subscribe to increase your limits!",
+                reply_markup=get_subscription_keyboard(language)
             )
         return
     
@@ -186,14 +230,16 @@ async def handle_text_message(message: Message):
                     if len(display_text) > 4000:
                         display_text = display_text[:4000] + "..."
                     
-                    # Try with Markdown first, fall back to plain text
+                    # Convert markdown to HTML for reliable rendering
+                    html_text = convert_markdown_to_html(display_text)
+                    
                     try:
                         await thinking_message.edit_text(
-                            display_text,
-                            parse_mode="Markdown"
+                            html_text,
+                            parse_mode="HTML"
                         )
                     except Exception:
-                        # If Markdown fails, send as plain text
+                        # If HTML fails, send as plain text
                         await thinking_message.edit_text(display_text)
                     
                     last_update_time = current_time
@@ -215,14 +261,16 @@ async def handle_text_message(message: Message):
                 if len(display_text) > 4000:
                     display_text = display_text[:4000] + "\n\n... (ответ обрезан)"
                 
-                # Try with Markdown, fall back to plain text
+                # Convert markdown to HTML for reliable rendering
+                html_text = convert_markdown_to_html(display_text)
+                
                 try:
                     await thinking_message.edit_text(
-                        display_text,
-                        parse_mode="Markdown"
+                        html_text,
+                        parse_mode="HTML"
                     )
                 except Exception:
-                    # If Markdown parsing fails, send as plain text
+                    # If HTML parsing fails, try plain text
                     await thinking_message.edit_text(display_text)
             except Exception:
                 pass

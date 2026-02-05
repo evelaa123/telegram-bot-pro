@@ -509,6 +509,47 @@ class Subscription(Base):
         return f"<Subscription(id={self.id}, user_id={self.user_id}, expires_at={self.expires_at})>"
 
 
+class SupportMessage(Base):
+    """
+    Support chat messages between users and admins.
+    Enables tech support functionality.
+    """
+    __tablename__ = "support_messages"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Message content
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    
+    # Direction: True = user -> admin, False = admin -> user
+    is_from_user: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    
+    # Admin who responded (if admin message)
+    admin_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("admins.id"), nullable=True)
+    
+    # Status
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True
+    )
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    admin: Mapped[Optional["Admin"]] = relationship("Admin", foreign_keys=[admin_id])
+    
+    __table_args__ = (
+        Index("ix_support_messages_user_created", "user_id", "created_at"),
+    )
+    
+    def __repr__(self) -> str:
+        return f"<SupportMessage(id={self.id}, user_id={self.user_id}, is_from_user={self.is_from_user})>"
+
+
 class APIUsageLog(Base):
     """
     Detailed API usage log for cost tracking and analytics.

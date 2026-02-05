@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import auth, users, stats, settings as settings_router, tasks
+from api.routers import auth, users, stats, settings as settings_router, tasks, support
 from database import init_db, close_db
 from database.redis_client import redis_client
 from config import settings
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
     app.include_router(settings_router.router, prefix="/api/settings", tags=["Settings"])
     app.include_router(tasks.router, prefix="/api/tasks", tags=["Tasks"])
+    app.include_router(support.router, prefix="/api/support", tags=["Support"])
     
     @app.get("/api/health")
     async def health_check():

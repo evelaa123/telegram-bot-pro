@@ -9,7 +9,7 @@ from aiogram.enums import ChatAction
 
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
-from bot.keyboards.inline import get_video_model_keyboard, get_video_duration_keyboard
+from bot.keyboards.inline import get_video_model_keyboard, get_video_duration_keyboard, get_subscription_keyboard
 from database.redis_client import redis_client
 from database.models import RequestType
 from config import settings
@@ -34,12 +34,18 @@ async def cmd_video(message: Message):
         if language == "ru":
             await message.answer(
                 f"⚠️ Вы достигли лимита генерации видео на сегодня ({max_limit}).\n"
-                "Лимиты обновятся в полночь UTC."
+                "Лимиты обновятся в полночь UTC.\n\n"
+                "💎 <b>Хотите больше видео?</b>\n"
+                "Оформите подписку для увеличения лимитов!",
+                reply_markup=get_subscription_keyboard(language)
             )
         else:
             await message.answer(
                 f"⚠️ You've reached your daily video generation limit ({max_limit}).\n"
-                "Limits reset at midnight UTC."
+                "Limits reset at midnight UTC.\n\n"
+                "💎 <b>Want more videos?</b>\n"
+                "Subscribe to increase your limits!",
+                reply_markup=get_subscription_keyboard(language)
             )
         return
     
@@ -47,25 +53,25 @@ async def cmd_video(message: Message):
         text = (
             "🎬 <b>Генерация видео</b>\n\n"
             f"Осталось сегодня: {max_limit - current} из {max_limit}\n\n"
-            "<b>Режимы:</b>\n"
-            "• <b>Быстрый</b> — генерация за 1-3 мин\n"
-            "• <b>Качество</b> — высокое качество (5-10 мин)\n\n"
-            "⚠️ <b>Ограничения:</b>\n"
-            "• Нельзя создавать реальных людей\n"
-            "• Нельзя использовать копирайтный контент\n\n"
-            "Выберите режим:"
+            "<b>Модели:</b>\n"
+            "• <b>sora-2</b> — быстрый режим (1-3 мин)\n"
+            "• <b>sora-2-pro</b> — высокое качество (5-10 мин)\n\n"
+            "<b>Длительности:</b> 4, 8 или 12 секунд\n"
+            "<b>Разрешение:</b> 720x1280\n\n"
+            "⚠️ Нельзя создавать реальных людей и копирайтный контент\n\n"
+            "Выберите модель:"
         )
     else:
         text = (
             "🎬 <b>Video Generation</b>\n\n"
             f"Remaining today: {max_limit - current} of {max_limit}\n\n"
-            "<b>Modes:</b>\n"
-            "• <b>Fast</b> — generation in 1-3 min\n"
-            "• <b>Quality</b> — high quality (5-10 min)\n\n"
-            "⚠️ <b>Restrictions:</b>\n"
-            "• Cannot create real people\n"
-            "• Cannot use copyrighted content\n\n"
-            "Choose a mode:"
+            "<b>Models:</b>\n"
+            "• <b>sora-2</b> — fast mode (1-3 min)\n"
+            "• <b>sora-2-pro</b> — high quality (5-10 min)\n\n"
+            "<b>Durations:</b> 4, 8 or 12 seconds\n"
+            "<b>Resolution:</b> 720x1280\n\n"
+            "⚠️ Cannot create real people or copyrighted content\n\n"
+            "Choose a model:"
         )
     
     await message.answer(text, reply_markup=get_video_model_keyboard(language))
@@ -75,7 +81,7 @@ async def cmd_video(message: Message):
 async def callback_video_model(callback: CallbackQuery):
     """Handle video model selection."""
     user = callback.from_user
-    model = callback.data.split(":")[2]  # sora-2-all or sora-2-pro-all
+    model = callback.data.split(":")[2]  # sora-2 or sora-2-pro
     
     # Store model and show duration selection
     await redis_client.set_user_state(user.id, f"video_model:{model}")
@@ -83,16 +89,14 @@ async def callback_video_model(callback: CallbackQuery):
     language = await user_service.get_user_language(user.id)
     
     if language == "ru":
-        mode_name = "Быстрый" if model == "sora-2-all" else "Высокое качество"
         await callback.message.edit_text(
-            f"🎬 <b>Режим: {mode_name}</b>\n\n"
+            f"🎬 <b>Модель: {model}</b>\n\n"
             "Выберите длительность видео:",
             reply_markup=get_video_duration_keyboard(language, model)
         )
     else:
-        mode_name = "Fast" if model == "sora-2-all" else "High Quality"
         await callback.message.edit_text(
-            f"🎬 <b>Mode: {mode_name}</b>\n\n"
+            f"🎬 <b>Model: {model}</b>\n\n"
             "Choose video duration:",
             reply_markup=get_video_duration_keyboard(language, model)
         )
@@ -104,7 +108,7 @@ async def callback_video_model(callback: CallbackQuery):
 async def callback_video_duration(callback: CallbackQuery):
     """Handle video duration selection."""
     user = callback.from_user
-    duration = int(callback.data.split(":")[2])  # 10, 15, or 25
+    duration = int(callback.data.split(":")[2])  # 4, 8, or 12
     
     # Get model from state
     state = await redis_client.get_user_state(user.id)
@@ -119,38 +123,25 @@ async def callback_video_duration(callback: CallbackQuery):
     
     language = await user_service.get_user_language(user.id)
     
-    # Calculate estimated price
-    price = "$0.08" if model == "sora-2-all" else "$0.80"
-    
     if language == "ru":
-        mode_name = "Быстрый" if model == "sora-2-all" else "Высокое качество"
         await callback.message.edit_text(
             f"🎬 <b>Настройки видео:</b>\n"
-            f"• Режим: {mode_name}\n"
+            f"• Модель: {model}\n"
             f"• Длительность: {duration} сек\n"
-            f"• Разрешение: 1280x720\n"
-            f"• Стоимость: {price}\n\n"
+            f"• Разрешение: 720x1280\n\n"
             "Теперь опишите видео, которое хотите создать.\n\n"
             "<i>Например: «Кот играет на пианино в джазовом клубе, нуар стиль»</i>\n\n"
-            "⚠️ <b>Ограничения:</b>\n"
-            "• Нельзя создавать реальных людей\n"
-            "• Нельзя использовать копирайтный контент\n"
-            "• Только для аудитории 18+"
+            "⚠️ Нельзя создавать реальных людей и копирайтный контент"
         )
     else:
-        mode_name = "Fast" if model == "sora-2-all" else "High Quality"
         await callback.message.edit_text(
             f"🎬 <b>Video settings:</b>\n"
-            f"• Mode: {mode_name}\n"
+            f"• Model: {model}\n"
             f"• Duration: {duration} sec\n"
-            f"• Resolution: 1280x720\n"
-            f"• Cost: {price}\n\n"
+            f"• Resolution: 720x1280\n\n"
             "Now describe the video you want to create.\n\n"
             "<i>Example: 'A cat playing piano in a jazz club, noir style'</i>\n\n"
-            "⚠️ <b>Restrictions:</b>\n"
-            "• Cannot create real people\n"
-            "• Cannot use copyrighted content\n"
-            "• 18+ audience only"
+            "⚠️ Cannot create real people or copyrighted content"
         )
     
     await callback.answer()
@@ -256,12 +247,16 @@ async def queue_video_generation(
         if language == "ru":
             await message.answer(
                 f"⚠️ Вы достигли лимита генерации видео на сегодня ({max_limit}).\n"
-                "Лимиты обновятся в полночь UTC."
+                "Лимиты обновятся в полночь UTC.\n\n"
+                "💎 Оформите подписку для увеличения лимитов!",
+                reply_markup=get_subscription_keyboard(language)
             )
         else:
             await message.answer(
                 f"⚠️ You've reached your daily video generation limit ({max_limit}).\n"
-                "Limits reset at midnight UTC."
+                "Limits reset at midnight UTC.\n\n"
+                "💎 Subscribe to increase your limits!",
+                reply_markup=get_subscription_keyboard(language)
             )
         return
     
@@ -305,33 +300,28 @@ async def queue_video_generation(
     await redis_client.clear_user_state(user_id)
     
     # Estimate time based on model
-    if model == "sora-2-all":
+    if model == "sora-2":
         time_estimate = "1-3 минуты" if language == "ru" else "1-3 minutes"
-    else:
+    else:  # sora-2-pro
         time_estimate = "5-10 минут" if language == "ru" else "5-10 minutes"
-    
-    mode_name_ru = "Быстрый" if model == "sora-2-all" else "Высокое качество"
-    mode_name_en = "Fast" if model == "sora-2-all" else "High Quality"
     
     if language == "ru":
         await message.answer(
-            "🎬 <b>Видео поставлено в очередь на генерацию!</b>\n\n"
+            "🎬 <b>Видео поставлено в очередь!</b>\n\n"
             f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Режим: {mode_name_ru}\n"
+            f"🤖 Модель: {model}\n"
             f"⏱ Длительность: {duration} сек\n\n"
-            f"⏳ Примерное время генерации: {time_estimate}\n\n"
-            "Я отправлю вам готовое видео, когда оно будет готово.\n"
-            "Вы можете продолжать пользоваться ботом."
+            f"⏳ Примерное время: {time_estimate}\n\n"
+            "Я отправлю готовое видео, когда оно будет готово."
         )
     else:
         await message.answer(
-            "🎬 <b>Video queued for generation!</b>\n\n"
+            "🎬 <b>Video queued!</b>\n\n"
             f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Mode: {mode_name_en}\n"
+            f"🤖 Model: {model}\n"
             f"⏱ Duration: {duration} sec\n\n"
             f"⏳ Estimated time: {time_estimate}\n\n"
-            "I'll send you the finished video when it's ready.\n"
-            "You can continue using the bot."
+            "I'll send you the video when it's ready."
         )
     
     logger.info(
@@ -363,11 +353,15 @@ async def queue_video_remix(
     if not has_limit:
         if language == "ru":
             await message.answer(
-                f"⚠️ Вы достигли лимита генерации видео на сегодня ({max_limit})."
+                f"⚠️ Вы достигли лимита генерации видео на сегодня ({max_limit}).\n\n"
+                "💎 Оформите подписку для увеличения лимитов!",
+                reply_markup=get_subscription_keyboard(language)
             )
         else:
             await message.answer(
-                f"⚠️ You've reached your daily video generation limit ({max_limit})."
+                f"⚠️ You've reached your daily video generation limit ({max_limit}).\n\n"
+                "💎 Subscribe to increase your limits!",
+                reply_markup=get_subscription_keyboard(language)
             )
         return
     

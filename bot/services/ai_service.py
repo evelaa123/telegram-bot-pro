@@ -267,12 +267,12 @@ class AIService:
         self,
         prompt: str,
         model: str = None,
-        duration: int = 5,
+        duration: int = 4,
         size: str = "1280x720",
         telegram_id: int = None
     ) -> Dict[str, Any]:
         """
-        Create video using CometAPI (Sora 2).
+        Create video using CometAPI Official Format (Sora 2).
         
         Args:
             prompt: Video description
@@ -287,7 +287,7 @@ class AIService:
         model = model or self.MODELS["video"]
         
         if self.cometapi.is_configured():
-            logger.info(f"Video creation using CometAPI/{model}", user_id=telegram_id)
+            logger.info(f"Video creation using CometAPI/{model}", user_id=telegram_id, duration=duration)
             return await self.cometapi.create_video(
                 prompt=prompt,
                 model=model,

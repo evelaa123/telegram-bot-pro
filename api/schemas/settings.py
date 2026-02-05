@@ -33,6 +33,11 @@ class ApiSettings(BaseModel):
     - Voice: whisper-1 via CometAPI
     - Presentations: GigaChat-2-Max (direct API)
     """
+    # Base URLs - configurable by admin (applied immediately via cache invalidation)
+    cometapi_base_url: str = Field("https://api.cometapi.com/v1", description="CometAPI base URL")
+    gigachat_auth_url: str = Field("https://ngw.devices.sberbank.ru:9443/api/v2/oauth", description="GigaChat OAuth URL")
+    gigachat_api_url: str = Field("https://gigachat.devices.sberbank.ru/api/v1", description="GigaChat API URL")
+    
     # Model settings - configurable by admin
     default_text_model: str = Field("qwen3-max-2026-01-23", description="Text generation model (via CometAPI)")
     default_image_model: str = Field("dall-e-3", description="Image generation model (via CometAPI)")

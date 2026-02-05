@@ -5,6 +5,40 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+def get_subscription_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
+    """
+    Get subscription prompt keyboard.
+    """
+    texts = {
+        "ru": {
+            "subscribe": "⭐ Оформить подписку",
+            "close": "❌ Закрыть"
+        },
+        "en": {
+            "subscribe": "⭐ Get Subscription",
+            "close": "❌ Close"
+        }
+    }
+    
+    t = texts.get(language, texts["ru"])
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=t["subscribe"],
+            callback_data="subscription:buy"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["close"],
+            callback_data="subscription:close"
+        )
+    )
+    
+    return builder.as_markup()
+
+
 def get_image_actions_keyboard(
     prompt: str = "",
     language: str = "ru"
@@ -51,19 +85,19 @@ def get_image_actions_keyboard(
 def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """
     Get video model selection keyboard.
-    Uses CometAPI custom format models:
-    - sora-2-all: Fast mode, $0.08 per generation (10/15 sec)
-    - sora-2-pro-all: High quality, $0.80 per generation (10/15/25 sec)
+    CometAPI models:
+    - sora-2: Fast mode (4/8/12 sec)
+    - sora-2-pro: High quality (4/8/12 sec)
     """
     texts = {
         "ru": {
-            "sora2": "⚡ Быстрый ($0.08)",
-            "sora2_pro": "🎬 Качество ($0.80)",
+            "sora2": "⚡ Быстрый (sora-2)",
+            "sora2_pro": "🎬 Качество (sora-2-pro)",
             "cancel": "❌ Отмена"
         },
         "en": {
-            "sora2": "⚡ Fast ($0.08)",
-            "sora2_pro": "🎬 Quality ($0.80)",
+            "sora2": "⚡ Fast (sora-2)",
+            "sora2_pro": "🎬 Quality (sora-2-pro)",
             "cancel": "❌ Cancel"
         }
     }
@@ -74,13 +108,13 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(
             text=t["sora2"],
-            callback_data="video:model:sora-2-all"
+            callback_data="video:model:sora-2"
         )
     )
     builder.row(
         InlineKeyboardButton(
             text=t["sora2_pro"],
-            callback_data="video:model:sora-2-pro-all"
+            callback_data="video:model:sora-2-pro"
         )
     )
     builder.row(
@@ -93,24 +127,22 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_video_duration_keyboard(language: str = "ru", model: str = "sora-2-all") -> InlineKeyboardMarkup:
+def get_video_duration_keyboard(language: str = "ru", model: str = "sora-2") -> InlineKeyboardMarkup:
     """
     Get video duration selection keyboard.
-    CometAPI custom format durations:
-    - sora-2-all: 10 or 15 seconds
-    - sora-2-pro-all: 10, 15, or 25 seconds
+    CometAPI durations: 4, 8, or 12 seconds for both models.
     """
     texts = {
         "ru": {
-            "10s": "10 секунд",
-            "15s": "15 секунд",
-            "25s": "25 секунд",
+            "4s": "4 сек",
+            "8s": "8 сек",
+            "12s": "12 сек",
             "cancel": "❌ Отмена"
         },
         "en": {
-            "10s": "10 seconds",
-            "15s": "15 seconds",
-            "25s": "25 seconds",
+            "4s": "4 sec",
+            "8s": "8 sec",
+            "12s": "12 sec",
             "cancel": "❌ Cancel"
         }
     }
@@ -119,14 +151,10 @@ def get_video_duration_keyboard(language: str = "ru", model: str = "sora-2-all")
     
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text=t["10s"], callback_data="video:duration:10"),
-        InlineKeyboardButton(text=t["15s"], callback_data="video:duration:15")
+        InlineKeyboardButton(text=t["4s"], callback_data="video:duration:4"),
+        InlineKeyboardButton(text=t["8s"], callback_data="video:duration:8"),
+        InlineKeyboardButton(text=t["12s"], callback_data="video:duration:12")
     )
-    # 25 seconds only available for sora-2-pro-all
-    if model == "sora-2-pro-all":
-        builder.row(
-            InlineKeyboardButton(text=t["25s"], callback_data="video:duration:25")
-        )
     builder.row(
         InlineKeyboardButton(text=t["cancel"], callback_data="video:cancel")
     )

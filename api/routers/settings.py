@@ -221,6 +221,19 @@ async def update_api_settings(
     """Update API configuration settings."""
     await set_setting("api", api.model_dump(), current_admin.id)
     
+    # INVALIDATE CACHES - apply changes immediately
+    try:
+        # Update CometAPI base URL
+        from bot.services.cometapi_service import cometapi_service
+        cometapi_service.set_base_url(api.cometapi_base_url)
+        
+        # Update GigaChat URLs
+        from bot.services.gigachat_service import gigachat_service
+        if hasattr(gigachat_service, 'set_urls'):
+            gigachat_service.set_urls(api.gigachat_auth_url, api.gigachat_api_url)
+    except Exception as e:
+        logger.warning(f"Failed to invalidate API service caches: {e}")
+    
     logger.info(
         "API settings updated",
         api=api.model_dump(),
@@ -392,6 +405,44 @@ async def update_api_keys(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update API keys: {str(e)}"
+        )
+
+
+@router.post("/gigachat/convert-credentials")
+async def convert_gigachat_credentials(
+    client_id: str,
+    client_secret: str,
+    current_admin: Admin = Depends(require_role(["superadmin", "admin"]))
+):
+    """
+    Convert GigaChat client_id and client_secret to Base64 credentials.
+    
+    GigaChat requires credentials in format: Base64(client_id:client_secret)
+    This endpoint helps admins convert their credentials.
+    """
+    import base64
+    
+    try:
+        credentials_string = f"{client_id}:{client_secret}"
+        encoded = base64.b64encode(credentials_string.encode()).decode()
+        
+        logger.info(
+            "GigaChat credentials converted",
+            admin=current_admin.username
+        )
+        
+        return {
+            "success": True,
+            "credentials": encoded,
+            "preview": f"{encoded[:20]}..." if len(encoded) > 20 else encoded,
+            "message": "Use this value for GIGACHAT_CREDENTIALS"
+        }
+        
+    except Exception as e:
+        logger.error("Failed to convert GigaChat credentials", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to convert credentials: {str(e)}"
         )
 
 

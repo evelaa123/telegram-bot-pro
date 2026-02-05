@@ -27,27 +27,69 @@ async def check_channel_subscription_for_inline(bot: Bot, user_id: int) -> bool:
     """
     Check if user is subscribed to required channel.
     For inline mode we need to check channel subscription, not premium.
-    """
-    # If subscription check is disabled, allow
-    if not getattr(settings, 'subscription_check_enabled', False):
-        return True
     
-    channel_id = getattr(settings, 'telegram_channel_id', None)
-    channel_username = getattr(settings, 'telegram_channel_username', None)
+    Returns True if:
+    - Subscription check is disabled in settings
+    - No channel is configured
+    - User is a member/admin/creator of the channel
+    - Check fails (fail-open to avoid blocking users on errors)
+    """
+    # First, try to get settings from DB (they might be updated by admin)
+    try:
+        from bot.services.settings_service import settings_service
+        bot_settings = await settings_service.get_bot_settings()
+        subscription_check_enabled = bot_settings.get('subscription_check_enabled', False)
+        channel_id = bot_settings.get('channel_id')
+        channel_username = bot_settings.get('channel_username')
+    except Exception:
+        # Fallback to env settings
+        subscription_check_enabled = getattr(settings, 'subscription_check_enabled', False)
+        channel_id = getattr(settings, 'telegram_channel_id', None)
+        channel_username = getattr(settings, 'telegram_channel_username', None)
+    
+    # If subscription check is disabled, allow
+    if not subscription_check_enabled:
+        logger.debug("Subscription check disabled", user_id=user_id)
+        return True
     
     # If no channel configured, allow
     if not channel_id and not channel_username:
+        logger.debug("No channel configured for subscription check", user_id=user_id)
         return True
     
     # Use channel_id if available, otherwise username
-    channel = channel_id if channel_id else channel_username
+    # Make sure channel_id is properly formatted (negative number for channels)
+    if channel_id:
+        try:
+            channel = int(channel_id)
+            # Channels should have negative IDs starting with -100
+            if channel > 0:
+                channel = -channel
+        except (ValueError, TypeError):
+            channel = channel_id
+    else:
+        # For username, ensure it starts with @
+        channel = channel_username if channel_username.startswith('@') else f"@{channel_username}"
     
     try:
         member = await bot.get_chat_member(channel, user_id)
-        return member.status in ('member', 'administrator', 'creator')
+        is_member = member.status in ('member', 'administrator', 'creator')
+        logger.info(
+            "Channel subscription check", 
+            user_id=user_id, 
+            channel=str(channel),
+            status=member.status,
+            is_member=is_member
+        )
+        return is_member
     except Exception as e:
-        logger.warning("Failed to check channel subscription", error=str(e), user_id=user_id)
-        return True  # Allow if can't check
+        logger.warning(
+            "Failed to check channel subscription - allowing access", 
+            error=str(e), 
+            user_id=user_id,
+            channel=str(channel)
+        )
+        return True  # Allow if can't check (fail-open)
 
 
 @router.inline_query()

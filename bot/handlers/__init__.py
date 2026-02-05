@@ -13,6 +13,7 @@ from bot.handlers.callbacks import router as callbacks_router
 from bot.handlers.channel_comments import router as channel_comments_router
 from bot.handlers.assistant import router as assistant_router
 from bot.handlers.presentation import router as presentation_router
+from bot.handlers.support import router as support_router
 
 
 def setup_routers() -> Router:
@@ -28,6 +29,7 @@ def setup_routers() -> Router:
     main_router.include_router(settings_router)
     main_router.include_router(assistant_router)  # Assistant features
     main_router.include_router(presentation_router)  # Presentation generation
+    main_router.include_router(support_router)  # Tech support
     main_router.include_router(image_router)
     main_router.include_router(video_router)
     main_router.include_router(voice_router)

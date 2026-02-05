@@ -22,9 +22,9 @@ class GigaChatService:
     Used primarily for presentation generation with Russian language support.
     """
     
-    # API URLs
-    AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    API_URL = "https://gigachat.devices.sberbank.ru/api/v1"
+    # Default API URLs (can be overridden via admin panel)
+    DEFAULT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    DEFAULT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1"
     
     # Available models
     MODELS = {
@@ -45,6 +45,26 @@ class GigaChatService:
     def __init__(self):
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
+        self._auth_url = self.DEFAULT_AUTH_URL
+        self._api_url = self.DEFAULT_API_URL
+    
+    @property
+    def AUTH_URL(self) -> str:
+        """Get OAuth URL (supports runtime changes via admin panel)."""
+        return self._auth_url
+    
+    @property
+    def API_URL(self) -> str:
+        """Get API URL (supports runtime changes via admin panel)."""
+        return self._api_url
+    
+    def set_urls(self, auth_url: str, api_url: str):
+        """Set URLs (called when admin updates settings). Clears cached token."""
+        self._auth_url = auth_url
+        self._api_url = api_url
+        self._access_token = None  # Force re-auth
+        self._token_expires_at = None
+        logger.info("GigaChat URLs updated", auth_url=auth_url, api_url=api_url)
     
     def is_configured(self) -> bool:
         """Check if GigaChat is configured."""

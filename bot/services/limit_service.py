@@ -122,10 +122,12 @@ class LimitService:
         limits = await self.get_user_limits(telegram_id)
         usage = await self.get_today_usage(telegram_id)
         
-        remaining = {
-            key: max(0, limits[key] - usage[key])
-            for key in limits
-        }
+        remaining = {}
+        for key in limits:
+            if limits[key] == -1:
+                remaining[key] = -1  # Unlimited
+            else:
+                remaining[key] = max(0, limits[key] - usage[key])
         
         # Calculate reset time (midnight UTC)
         now = datetime.utcnow()
@@ -149,6 +151,9 @@ class LimitService:
             
         Returns:
             Tuple of (has_limit, current_usage, max_limit)
+            
+        Note:
+            If max_limit is -1, user has unlimited access.
         """
         type_key = request_type.value  # text, image, etc.
         
@@ -157,6 +162,10 @@ class LimitService:
         
         max_limit = limits.get(type_key, 0)
         current = usage.get(type_key, 0)
+        
+        # -1 means unlimited
+        if max_limit == -1:
+            return True, current, -1
         
         return current < max_limit, current, max_limit
     
@@ -296,27 +305,33 @@ class LimitService:
         hours_left = int(time_left.total_seconds() // 3600)
         minutes_left = int((time_left.total_seconds() % 3600) // 60)
         
+        def format_limit(rem, lim, lang):
+            """Format limit display, handling unlimited (-1)."""
+            if lim == -1:
+                return "∞" if lang == "ru" else "∞"
+            return f"{rem}/{lim}"
+        
         if language == "ru":
             text = (
                 "📊 <b>Ваши лимиты на сегодня:</b>\n\n"
-                f"💬 Текст: {remaining['text']}/{limits['text']}\n"
-                f"🖼 Изображения: {remaining['image']}/{limits['image']}\n"
-                f"🎬 Видео: {remaining['video']}/{limits['video']}\n"
-                f"🎤 Голосовые: {remaining['voice']}/{limits['voice']}\n"
-                f"📊 Презентации: {remaining.get('presentation', 0)}/{limits.get('presentation', 3)}\n"
-                f"📄 Документы: {remaining['document']}/{limits['document']}\n\n"
+                f"💬 Текст: {format_limit(remaining['text'], limits['text'], 'ru')}\n"
+                f"🖼 Изображения: {format_limit(remaining['image'], limits['image'], 'ru')}\n"
+                f"🎬 Видео: {format_limit(remaining['video'], limits['video'], 'ru')}\n"
+                f"🎤 Голосовые: {format_limit(remaining['voice'], limits['voice'], 'ru')}\n"
+                f"📊 Презентации: {format_limit(remaining.get('presentation', 0), limits.get('presentation', 3), 'ru')}\n"
+                f"📄 Документы: {format_limit(remaining['document'], limits['document'], 'ru')}\n\n"
                 f"🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м\n\n"
                 "💳 Оформите подписку для безлимитного доступа!"
             )
         else:
             text = (
                 "📊 <b>Your Daily Limits:</b>\n\n"
-                f"💬 Text: {remaining['text']}/{limits['text']}\n"
-                f"🖼 Images: {remaining['image']}/{limits['image']}\n"
-                f"🎬 Videos: {remaining['video']}/{limits['video']}\n"
-                f"🎤 Voice: {remaining['voice']}/{limits['voice']}\n"
-                f"📊 Presentations: {remaining.get('presentation', 0)}/{limits.get('presentation', 3)}\n"
-                f"📄 Documents: {remaining['document']}/{limits['document']}\n\n"
+                f"💬 Text: {format_limit(remaining['text'], limits['text'], 'en')}\n"
+                f"🖼 Images: {format_limit(remaining['image'], limits['image'], 'en')}\n"
+                f"🎬 Videos: {format_limit(remaining['video'], limits['video'], 'en')}\n"
+                f"🎤 Voice: {format_limit(remaining['voice'], limits['voice'], 'en')}\n"
+                f"📊 Presentations: {format_limit(remaining.get('presentation', 0), limits.get('presentation', 3), 'en')}\n"
+                f"📄 Documents: {format_limit(remaining['document'], limits['document'], 'en')}\n\n"
                 f"🔄 Limits reset in: {hours_left}h {minutes_left}m\n\n"
                 "💳 Get subscription for unlimited access!"
             )
