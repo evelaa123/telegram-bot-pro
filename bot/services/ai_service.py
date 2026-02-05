@@ -21,8 +21,8 @@ class AIService:
     Unified AI service that routes ALL requests to CometAPI.
     
     Fixed models (no user selection):
-    - Text: qwen-3-max (via CometAPI)
-    - Vision: qwen-3-max (via CometAPI)
+    - Text: qwen3-max-2026-01-23 (via CometAPI)
+    - Vision: qwen3-max-2026-01-23 (via CometAPI)
     - Images: dall-e-3 (via CometAPI)
     - Video: sora-2 (via CometAPI)
     - Voice: whisper-1 (via CometAPI)
@@ -31,8 +31,8 @@ class AIService:
     
     # Fixed models - no user selection
     MODELS = {
-        "text": "qwen-3-max",
-        "vision": "qwen-3-max",
+        "text": "qwen3-max-2026-01-23",
+        "vision": "qwen3-max-2026-01-23",
         "image": "dall-e-3",
         "video": "sora-2",
         "voice": "whisper-1",
@@ -59,7 +59,7 @@ class AIService:
         return self.cometapi
     
     # =========================================
-    # Text Generation (CometAPI / Qwen-3-Max)
+    # Text Generation (CometAPI / qwen3-max-2026-01-23)
     # =========================================
     
     async def generate_text_stream(
@@ -71,12 +71,12 @@ class AIService:
         temperature: float = 0.7
     ) -> AsyncGenerator[Tuple[str, bool], None]:
         """
-        Generate text with streaming using CometAPI (Qwen-3-Max).
+        Generate text with streaming using CometAPI (qwen3-max-2026-01-23).
         
         Args:
             messages: List of message dicts with 'role' and 'content'
             telegram_id: User's Telegram ID (for logging)
-            model: Override model (default: qwen-3-max)
+            model: Override model (default: qwen3-max-2026-01-23)
             max_tokens: Maximum tokens to generate
             temperature: Creativity parameter
             
@@ -111,7 +111,7 @@ class AIService:
         temperature: float = 0.7
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Generate text without streaming using CometAPI (Qwen-3-Max).
+        Generate text without streaming using CometAPI (qwen3-max-2026-01-23).
         
         Returns:
             Tuple of (response_text, usage_info)
@@ -146,7 +146,7 @@ class AIService:
         model: str = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Analyze image using CometAPI (Qwen-3-Max vision).
+        Analyze image using CometAPI (qwen3-max-2026-01-23 vision).
         
         Returns:
             Tuple of (analysis_text, usage_info)
