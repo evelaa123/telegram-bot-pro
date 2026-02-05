@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     
     # CometAPI Configuration (Main AI provider)
     cometapi_api_key: str = Field("", description="CometAPI API Key")
+    cometapi_base_url: str = Field("https://api.cometapi.com/v1", description="CometAPI Base URL")
+    
+    # Subscription Check
+    subscription_check_enabled: bool = Field(False, description="Enable channel subscription check")
     
     # GigaChat Configuration (For presentations)
     gigachat_credentials: Optional[str] = Field(None, description="GigaChat Base64 encoded credentials")

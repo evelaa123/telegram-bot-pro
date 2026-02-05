@@ -84,9 +84,14 @@ class GigaChatService:
                 
                 result = await response.json()
                 self._access_token = result['access_token']
-                # Token expires in 30 minutes
-                self._token_expires_at = datetime.now() + timedelta(seconds=result.get('expires_at', 1800) - 60)
+                # expires_at is a Unix timestamp (milliseconds)
+                expires_at_ms = result.get('expires_at', 0)
+                if expires_at_ms > 1000000000000:  # Timestamp in milliseconds
+                    self._token_expires_at = datetime.fromtimestamp(expires_at_ms / 1000) - timedelta(minutes=1)
+                else:  # Fallback: treat as seconds from now
+                    self._token_expires_at = datetime.now() + timedelta(minutes=29)
                 
+                logger.info("GigaChat token obtained", expires_at=self._token_expires_at)
                 return self._access_token
     
     async def _make_request(

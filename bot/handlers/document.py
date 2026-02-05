@@ -8,7 +8,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatAction
 
-from bot.services.openai_service import openai_service
+from bot.services.ai_service import ai_service
 from bot.services.document_service import document_service
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
@@ -322,16 +322,18 @@ async def analyze_document_with_vision(
     
     try:
         if len(images) == 1:
-            # Single image analysis
-            result, usage = await openai_service.analyze_image(
+            # Single image analysis via CometAPI
+            result, usage = await ai_service.analyze_image(
                 image_data=images[0],
-                prompt=prompt
+                prompt=prompt,
+                telegram_id=user_id
             )
         else:
             # Multiple images (PDF pages)
-            result, usage = await openai_service.analyze_document_images(
+            result, usage = await ai_service.analyze_document_images(
                 images=images[:10],  # Limit to 10 images
-                prompt=prompt
+                prompt=prompt,
+                telegram_id=user_id
             )
         
         duration_ms = int((time.time() - start_time) * 1000)
@@ -356,7 +358,7 @@ async def analyze_document_with_vision(
             request_type=RequestType.DOCUMENT,
             prompt=prompt[:500],
             response_preview=result[:500],
-            model="gpt-4o",
+            model=usage.get("model", "qwen3-max"),
             cost_usd=float(usage.get("cost_usd", 0)),
             status=RequestStatus.SUCCESS,
             duration_ms=duration_ms
@@ -376,7 +378,7 @@ async def analyze_document_with_vision(
             telegram_id=user_id,
             request_type=RequestType.DOCUMENT,
             prompt=prompt[:500],
-            model="gpt-4o",
+            model="qwen3-max",
             status=RequestStatus.FAILED,
             error_message=str(e)
         )
@@ -518,10 +520,10 @@ async def process_document_request(
             {"role": "user", "content": f"Document content:\n\n{doc_text}\n\nUser request: {request}"}
         ]
         
-        # Generate response
-        response, usage = await openai_service.generate_text(
+        # Generate response via CometAPI
+        response, usage = await ai_service.generate_text(
             messages=messages,
-            model="gpt-4o"
+            telegram_id=user_id
         )
         
         duration_ms = int((time.time() - start_time) * 1000)
@@ -539,7 +541,7 @@ async def process_document_request(
             request_type=RequestType.DOCUMENT,
             prompt=request[:500],
             response_preview=response[:500],
-            model="gpt-4o",
+            model=usage.get("model", "qwen3-max"),
             tokens_input=usage.get("input_tokens"),
             tokens_output=usage.get("output_tokens"),
             cost_usd=float(usage.get("cost_usd", 0)),
@@ -561,7 +563,7 @@ async def process_document_request(
             telegram_id=user_id,
             request_type=RequestType.DOCUMENT,
             prompt=request[:500],
-            model="gpt-4o",
+            model="qwen3-max",
             status=RequestStatus.FAILED,
             error_message=str(e)
         )

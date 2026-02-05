@@ -3,7 +3,7 @@ Inline mode handler.
 Handles inline queries for use in any chat.
 """
 import hashlib
-from aiogram import Router
+from aiogram import Router, Bot
 from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
@@ -23,8 +23,35 @@ logger = structlog.get_logger()
 router = Router()
 
 
+async def check_channel_subscription_for_inline(bot: Bot, user_id: int) -> bool:
+    """
+    Check if user is subscribed to required channel.
+    For inline mode we need to check channel subscription, not premium.
+    """
+    # If subscription check is disabled, allow
+    if not getattr(settings, 'subscription_check_enabled', False):
+        return True
+    
+    channel_id = getattr(settings, 'telegram_channel_id', None)
+    channel_username = getattr(settings, 'telegram_channel_username', None)
+    
+    # If no channel configured, allow
+    if not channel_id and not channel_username:
+        return True
+    
+    # Use channel_id if available, otherwise username
+    channel = channel_id if channel_id else channel_username
+    
+    try:
+        member = await bot.get_chat_member(channel, user_id)
+        return member.status in ('member', 'administrator', 'creator')
+    except Exception as e:
+        logger.warning("Failed to check channel subscription", error=str(e), user_id=user_id)
+        return True  # Allow if can't check
+
+
 @router.inline_query()
-async def handle_inline_query(inline_query: InlineQuery):
+async def handle_inline_query(inline_query: InlineQuery, bot: Bot):
     """Handle inline queries."""
     user = inline_query.from_user
     query = inline_query.query.strip()
@@ -44,9 +71,8 @@ async def handle_inline_query(inline_query: InlineQuery):
         language_code=user.language_code
     )
     
-    # Проверяем подписку на канал (если включена проверка)
-    # check_subscription принимает только telegram_id
-    is_subscribed = await subscription_service.check_subscription(user.id)
+    # Проверяем подписку на канал (не premium!)
+    is_subscribed = await check_channel_subscription_for_inline(bot, user.id)
     
     if not is_subscribed:
         results = [

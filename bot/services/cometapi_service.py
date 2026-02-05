@@ -24,8 +24,10 @@ class CometAPIService:
     Provides unified access to Qwen-3-Max, image generation, video generation, and Whisper.
     """
     
-    # CometAPI base URL
-    BASE_URL = "https://api.cometapi.com/v1"
+    @property
+    def BASE_URL(self) -> str:
+        """Get CometAPI base URL from settings (supports runtime changes)."""
+        return getattr(settings, 'cometapi_base_url', 'https://api.cometapi.com/v1')
     
     # Model names in CometAPI
     MODELS = {
@@ -38,12 +40,17 @@ class CometAPIService:
     # Pricing estimates (per 1K tokens or per request)
     PRICING = {
         "qwen-3-max": {"input": 0.002, "output": 0.008},
+        "qwen3-max-2026-01-23": {"input": 0.002, "output": 0.008},
         "dall-e-3": {
             "1024x1024": 0.04,
             "1792x1024": 0.08,
             "1024x1792": 0.08
         },
         "whisper-1": 0.006,  # per minute
+        # CometAPI custom format pricing (fixed rates)
+        "sora-2-all": 0.08,  # Fixed $0.08 per generation
+        "sora-2-pro-all": 0.80,  # Fixed $0.80 per generation
+        # Legacy pricing (per second)
         "sora-2": {"per_second": 0.05},
         "sora-2-pro": {"per_second": 0.10}
     }
@@ -51,22 +58,33 @@ class CometAPIService:
     def __init__(self):
         self._client = None
         self._api_key = None
+        self._base_url = None
     
     @property
     def client(self) -> AsyncOpenAI:
         """Get or create OpenAI client configured for CometAPI."""
         api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
+        base_url = self.BASE_URL
         
-        # Recreate client if API key changed
-        if self._client is None or self._api_key != api_key:
+        # Recreate client if API key or base URL changed
+        if self._client is None or self._api_key != api_key or self._base_url != base_url:
             self._api_key = api_key
+            self._base_url = base_url
             self._client = AsyncOpenAI(
                 api_key=api_key,
-                base_url=self.BASE_URL,
+                base_url=base_url,
                 timeout=settings.openai_timeout
             )
+            logger.info("CometAPI client created/updated", base_url=base_url)
         
         return self._client
+    
+    def reset_client(self):
+        """Force reset the client to pick up new settings."""
+        self._client = None
+        self._api_key = None
+        self._base_url = None
+        logger.info("CometAPI client reset")
     
     def is_configured(self) -> bool:
         """Check if CometAPI is configured."""
@@ -299,60 +317,85 @@ class CometAPIService:
                 raise Exception(f"Failed to download image: HTTP {response.status}")
     
     # =========================================
-    # Video Generation
+    # Video Generation (CometAPI Custom Format)
     # =========================================
     
     async def create_video(
         self,
         prompt: str,
-        model: str = "sora-2",
-        duration: int = 5,
+        model: str = "sora-2-all",
+        duration: int = 10,
         size: str = "1280x720"
     ) -> Dict[str, Any]:
         """
-        Create video generation task.
+        Create video generation task using CometAPI custom format.
         
         Args:
             prompt: Video description
-            model: sora-2 or sora-2-pro
-            duration: Duration in seconds (4, 8, or 12)
-            size: Resolution
+            model: sora-2-all or sora-2-pro-all
+            duration: Duration in seconds (10, 15, or 25 for pro)
+            size: Resolution (720x1280, 1280x720, 1024x1792, 1792x1024)
             
         Returns:
             Video task info with video_id
         """
+        # Map old model names to new CometAPI custom format
+        model_map = {
+            "sora-2": "sora-2-all",
+            "sora-2-pro": "sora-2-pro-all"
+        }
+        actual_model = model_map.get(model, model)
+        
+        # Valid durations for each model
+        if actual_model == "sora-2-all":
+            valid_durations = [10, 15]
+            if duration not in valid_durations:
+                duration = 10
+        else:  # sora-2-pro-all
+            valid_durations = [10, 15, 25]
+            if duration not in valid_durations:
+                duration = 10
+        
+        api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
+        
         try:
-            # Map duration to valid Sora values
-            duration_map = {
-                4: "4", 5: "4", 8: "8", 10: "8", 12: "12"
-            }
-            sora_seconds = duration_map.get(duration, "4")
+            # Use multipart/form-data as per CometAPI docs
+            form_data = aiohttp.FormData()
+            form_data.add_field('prompt', prompt)
+            form_data.add_field('model', actual_model)
+            form_data.add_field('seconds', str(duration))
+            form_data.add_field('size', size)
             
-            video = await self.client.videos.create(
-                model=model,
-                prompt=prompt,
-                size=size,
-                seconds=sora_seconds
-            )
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.BASE_URL}/videos",
+                    data=form_data,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"CometAPI video creation failed: {response.status} - {error_text}")
+                    
+                    data = await response.json()
             
             result = {
-                "video_id": video.id,
-                "status": video.status,
-                "model": model,
-                "duration": int(sora_seconds),
+                "video_id": data.get("id"),
+                "status": data.get("status", "queued"),
+                "model": actual_model,
+                "duration": duration,
                 "size": size,
                 "provider": "cometapi"
             }
             
-            # Calculate cost based on duration
-            pricing = self.PRICING.get(model, self.PRICING["sora-2"])
-            cost = pricing["per_second"] * int(sora_seconds)
+            # Calculate cost (fixed rate for CometAPI custom format)
+            cost = self.PRICING.get(actual_model, 0.08)
             
             # Log API usage
             try:
                 await usage_tracking_service.log_api_call(
                     provider="cometapi",
-                    model=model,
+                    model=actual_model,
                     endpoint="video",
                     cost_usd=Decimal(str(cost)),
                     success=True
@@ -360,15 +403,15 @@ class CometAPIService:
             except Exception as log_error:
                 logger.warning("Failed to log API usage", error=str(log_error))
             
+            logger.info("Video creation started", video_id=result["video_id"], model=actual_model)
             return result
             
         except Exception as e:
             logger.error("CometAPI video creation error", error=str(e))
-            # Log failed call
             try:
                 await usage_tracking_service.log_api_call(
                     provider="cometapi",
-                    model=model,
+                    model=actual_model,
                     endpoint="video",
                     success=False,
                     error_message=str(e)
@@ -378,22 +421,32 @@ class CometAPIService:
             raise
     
     async def get_video_status(self, video_id: str) -> Dict[str, Any]:
-        """Check video generation status."""
+        """Check video generation status via API."""
+        api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
+        
         try:
-            video = await self.client.videos.retrieve(video_id)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.BASE_URL}/videos/{video_id}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"Failed to get video status: {response.status} - {error_text}")
+                    
+                    data = await response.json()
             
             error_message = None
-            if hasattr(video, 'error') and video.error:
-                if isinstance(video.error, dict):
-                    error_message = video.error.get('message')
-                elif hasattr(video.error, 'message'):
-                    error_message = video.error.message
+            if data.get("error"):
+                error_message = data["error"].get("message") if isinstance(data["error"], dict) else str(data["error"])
             
             return {
-                "video_id": video.id,
-                "status": video.status,
-                "progress": getattr(video, 'progress', 0),
-                "error_message": error_message
+                "video_id": data.get("id"),
+                "status": data.get("status"),
+                "progress": data.get("progress", 0),
+                "error_message": error_message,
+                "output_url": data.get("output_url")  # URL when completed
             }
             
         except Exception as e:
@@ -401,11 +454,40 @@ class CometAPIService:
             raise
     
     async def download_video(self, video_id: str) -> bytes:
-        """Download completed video."""
+        """Download completed video by video_id."""
+        api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
+        
         try:
-            response = await self.client.videos.download_content(video_id)
-            video_bytes = await response.read()
-            return video_bytes
+            # First get video status to find the output URL
+            status = await self.get_video_status(video_id)
+            
+            if status.get("status") != "completed":
+                raise Exception(f"Video not ready. Status: {status.get('status')}")
+            
+            output_url = status.get("output_url")
+            
+            if output_url:
+                # Download from output URL
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        output_url,
+                        timeout=aiohttp.ClientTimeout(total=300)
+                    ) as response:
+                        if response.status != 200:
+                            raise Exception(f"Failed to download video: {response.status}")
+                        return await response.read()
+            
+            # Fallback: try download endpoint
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.BASE_URL}/videos/{video_id}/download",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=aiohttp.ClientTimeout(total=300)
+                ) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download video: {response.status}")
+                    return await response.read()
+                    
         except Exception as e:
             logger.error("CometAPI video download error", error=str(e))
             raise
