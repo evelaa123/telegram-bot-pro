@@ -185,11 +185,22 @@ async def callback_video_regenerate(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("video:remix:"))
+@router.callback_query(F.data == "video:remix")
 async def callback_video_remix(callback: CallbackQuery):
     """Handle video remix request."""
     user = callback.from_user
-    video_id = callback.data.split(":")[2]
+    
+    # Get video_id from last_video_id stored in Redis
+    video_id = await redis_client.client.get(f"user:{user.id}:last_video_id")
+    if not video_id:
+        language = await user_service.get_user_language(user.id)
+        if language == "ru":
+            await callback.answer("Видео не найдено", show_alert=True)
+        else:
+            await callback.answer("Video not found", show_alert=True)
+        return
+    
+    video_id = video_id.decode() if isinstance(video_id, bytes) else video_id
     
     # Store video ID for remix
     await redis_client.set_user_state(user.id, f"video_remix:{video_id}")

@@ -298,3 +298,10 @@ async def btn_voice_mode(message: Message):
         )
     
     await message.answer(text)
+
+
+@router.message(F.text.in_({"📨 Поддержка", "📨 Support"}))
+async def btn_support(message: Message):
+    """Handle support button from Reply keyboard."""
+    from bot.handlers.support import cmd_support
+    await cmd_support(message)

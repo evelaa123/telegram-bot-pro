@@ -170,6 +170,7 @@ def get_video_actions_keyboard(
 ) -> InlineKeyboardMarkup:
     """
     Get video generation result actions keyboard.
+    NOTE: video_id is stored in Redis, not in callback_data (to avoid 64-byte limit)
     """
     texts = {
         "ru": {
@@ -192,7 +193,7 @@ def get_video_actions_keyboard(
         ),
         InlineKeyboardButton(
             text=t["remix"],
-            callback_data=f"video:remix:{video_id}"
+            callback_data="video:remix"  # video_id stored separately in Redis
         )
     )
     

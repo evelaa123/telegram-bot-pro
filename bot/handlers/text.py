@@ -23,10 +23,15 @@ logger = structlog.get_logger()
 router = Router()
 
 
-def convert_markdown_to_html(text: str) -> str:
+def convert_markdown_to_html(text: str, is_streaming: bool = False) -> str:
     """
     Convert Markdown formatting to Telegram HTML.
     Handles: bold, italic, code, code blocks.
+    
+    Args:
+        text: The markdown text to convert
+        is_streaming: If True, be more conservative with conversions
+                     (avoid converting incomplete markdown patterns)
     """
     # Escape HTML special characters first (except those we'll use for tags)
     text = text.replace('&', '&amp;')
@@ -34,21 +39,27 @@ def convert_markdown_to_html(text: str) -> str:
     text = text.replace('>', '&gt;')
     
     # Code blocks (```code```) - must be first to avoid conflicts
+    # Only convert complete code blocks
     text = re.sub(r'```(\w*)\n?(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
     
-    # Inline code (`code`)
-    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    # Inline code (`code`) - only if complete
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
     
-    # Bold (**text** or __text__)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'__([^_]+)__', r'<b>\1</b>', text)
+    # Bold (**text**) - only complete pairs
+    text = re.sub(r'\*\*([^*]+?)\*\*', r'<b>\1</b>', text)
     
-    # Italic (*text* or _text_) - be careful not to match already processed bold
-    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<i>\1</i>', text)
-    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<i>\1</i>', text)
+    # Bold (__text__) - only complete pairs  
+    text = re.sub(r'__([^_]+?)__', r'<b>\1</b>', text)
     
-    # Strikethrough (~~text~~)
-    text = re.sub(r'~~([^~]+)~~', r'<s>\1</s>', text)
+    # Italic (*text*) - be careful not to match ** or incomplete
+    # Only match if not preceded/followed by another *
+    text = re.sub(r'(?<!\*)\*([^*\n]+?)\*(?!\*)', r'<i>\1</i>', text)
+    
+    # Italic (_text_) - be careful not to match __ or incomplete
+    text = re.sub(r'(?<!_)_([^_\n]+?)_(?!_)', r'<i>\1</i>', text)
+    
+    # Strikethrough (~~text~~) - only complete pairs
+    text = re.sub(r'~~([^~]+?)~~', r'<s>\1</s>', text)
     
     return text
 
@@ -75,6 +86,7 @@ async def handle_text_message(message: Message):
         "🎤 Голос", "🎤 Voice",  # Added missing buttons
         "📊 Презентация", "📊 Presentation",
         "🗓 Ассистент", "🗓 Assistant",
+        "📨 Поддержка", "📨 Support",  # Support button
     }
     
     if text in menu_buttons:
