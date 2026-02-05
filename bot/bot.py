@@ -9,6 +9,13 @@ from aiogram.fsm.storage.redis import RedisStorage
 from config import settings
 
 
+# Validate telegram_bot_token at import time
+if not settings.telegram_bot_token:
+    raise ValueError(
+        "TELEGRAM_BOT_TOKEN is required to run the bot. "
+        "Please set it in .env file or environment variables."
+    )
+
 # Initialize Redis storage for FSM
 storage = RedisStorage.from_url(settings.redis_url)
 

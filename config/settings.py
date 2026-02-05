@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     )
     
     # Telegram Configuration
-    telegram_bot_token: str = Field(..., description="Telegram Bot API Token")
+    # Note: Default empty string allows API to start without bot token for admin-only mode
+    # Bot will check and fail at runtime if token is not provided
+    telegram_bot_token: str = Field("", description="Telegram Bot API Token")
     telegram_channel_id: int = Field(0, description="Channel ID for subscription check")
     telegram_channel_username: str = Field("@channel", description="Channel username for links")
     
