@@ -156,11 +156,10 @@ async def handle_text_message(message: Message):
         full_response = ""
         last_update_time = time.time()
         token_count = 0
-        
+                
         async for chunk, is_complete in ai_service.generate_text_stream(
             messages=messages,
             telegram_id=user.id,
-            provider=ai_provider,
             model=model
         ):
             full_response += chunk

@@ -12,7 +12,7 @@ import {
   Divider,
   Row,
   Col,
-  Select,
+  Alert,
 } from 'antd';
 import { settingsApi } from '../services/api';
 
@@ -35,21 +35,17 @@ interface BotSettings {
 }
 
 interface ApiSettings {
-  default_gpt_model: string;
-  default_image_model: string;
-  default_video_model: string;
-  default_qwen_model: string;
-  default_ai_provider: 'openai' | 'qwen';
   max_context_messages: number;
   context_ttl_seconds: number;
   openai_timeout: number;
 }
 
 interface ApiKeysStatus {
+  cometapi_configured: boolean;
+  gigachat_configured: boolean;
   openai_configured: boolean;
-  qwen_configured: boolean;
+  cometapi_key_preview: string | null;
   openai_key_preview: string | null;
-  qwen_key_preview: string | null;
 }
 
 function SettingsPage() {
@@ -120,16 +116,19 @@ function SettingsPage() {
     }
   };
 
-  const handleSaveApiKeys = async (values: { openai_api_key?: string; qwen_api_key?: string }) => {
+  const handleSaveApiKeys = async (values: { cometapi_api_key?: string; gigachat_credentials?: string; openai_api_key?: string }) => {
     setSaving(true);
     try {
       // Only send keys that were actually entered
-      const keysToUpdate: { openai_api_key?: string; qwen_api_key?: string } = {};
+      const keysToUpdate: { cometapi_api_key?: string; gigachat_credentials?: string; openai_api_key?: string } = {};
+      if (values.cometapi_api_key && values.cometapi_api_key.trim()) {
+        keysToUpdate.cometapi_api_key = values.cometapi_api_key.trim();
+      }
+      if (values.gigachat_credentials && values.gigachat_credentials.trim()) {
+        keysToUpdate.gigachat_credentials = values.gigachat_credentials.trim();
+      }
       if (values.openai_api_key && values.openai_api_key.trim()) {
         keysToUpdate.openai_api_key = values.openai_api_key.trim();
-      }
-      if (values.qwen_api_key && values.qwen_api_key.trim()) {
-        keysToUpdate.qwen_api_key = values.qwen_api_key.trim();
       }
       
       if (Object.keys(keysToUpdate).length === 0) {
@@ -169,9 +168,75 @@ function SettingsPage() {
 
       <Row gutter={24}>
         <Col span={12}>
+          {/* AI Provider Status */}
+          <Card 
+            title="🤖 AI Provider Configuration" 
+            style={{ marginBottom: 24 }}
+          >
+            <Alert
+              message="Fixed AI Models (No User Selection)"
+              description={
+                <div>
+                  <p><strong>Text Generation:</strong> Qwen-3-Max (via CometAPI)</p>
+                  <p><strong>Image Generation:</strong> DALL-E 3 (via CometAPI)</p>
+                  <p><strong>Video Generation:</strong> Sora 2 (via CometAPI)</p>
+                  <p><strong>Voice Recognition:</strong> Whisper (via CometAPI)</p>
+                  <p><strong>Presentations:</strong> GigaChat (Direct API)</p>
+                </div>
+              }
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            
+            {apiKeysStatus && (
+              <div>
+                <Divider orientation="left">Provider Status</Divider>
+                <Row gutter={16}>
+                  <Col span={8}>
+                    <Card size="small" style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 24 }}>
+                        {apiKeysStatus.cometapi_configured ? '✅' : '❌'}
+                      </div>
+                      <Text strong>CometAPI</Text>
+                      <br />
+                      <Text type="secondary" style={{ fontSize: 10 }}>
+                        {apiKeysStatus.cometapi_key_preview || 'Not configured'}
+                      </Text>
+                    </Card>
+                  </Col>
+                  <Col span={8}>
+                    <Card size="small" style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 24 }}>
+                        {apiKeysStatus.gigachat_configured ? '✅' : '❌'}
+                      </div>
+                      <Text strong>GigaChat</Text>
+                      <br />
+                      <Text type="secondary" style={{ fontSize: 10 }}>
+                        {apiKeysStatus.gigachat_configured ? 'Configured' : 'Not configured'}
+                      </Text>
+                    </Card>
+                  </Col>
+                  <Col span={8}>
+                    <Card size="small" style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 24 }}>
+                        {apiKeysStatus.openai_configured ? '✅' : '⚠️'}
+                      </div>
+                      <Text strong>OpenAI</Text>
+                      <br />
+                      <Text type="secondary" style={{ fontSize: 10 }}>
+                        {apiKeysStatus.openai_key_preview || 'Fallback only'}
+                      </Text>
+                    </Card>
+                  </Col>
+                </Row>
+              </div>
+            )}
+          </Card>
+
           {/* Global Limits */}
           <Card
-            title="Global Limits (per user per day)"
+            title="📊 Global Limits (per user per day)"
             style={{ marginBottom: 24 }}
           >
             <Form
@@ -223,7 +288,7 @@ function SettingsPage() {
           </Card>
 
           {/* Bot Settings */}
-          <Card title="Bot Settings">
+          <Card title="🤖 Bot Settings">
             <Form form={botForm} layout="vertical" onFinish={handleSaveBot}>
               <Form.Item
                 name="is_enabled"
@@ -274,34 +339,20 @@ function SettingsPage() {
           <Card 
             title="🔑 API Keys" 
             style={{ marginBottom: 24 }}
-            extra={
-              apiKeysStatus && (
-                <Text type="secondary">
-                  OpenAI: {apiKeysStatus.openai_configured ? '✅' : '❌'} | 
-                  Qwen: {apiKeysStatus.qwen_configured ? '✅' : '❌'}
-                </Text>
-              )
-            }
           >
-            {apiKeysStatus && (
-              <div style={{ marginBottom: 16 }}>
-                <Text type="secondary">
-                  <strong>Current Status:</strong><br />
-                  OpenAI: {apiKeysStatus.openai_configured 
-                    ? `Configured (${apiKeysStatus.openai_key_preview})` 
-                    : 'Not configured'}<br />
-                  Qwen: {apiKeysStatus.qwen_configured 
-                    ? `Configured (${apiKeysStatus.qwen_key_preview})` 
-                    : 'Not configured'}
-                </Text>
-              </div>
-            )}
-            <Divider />
+            <Alert
+              message="CometAPI is the primary provider"
+              description="All text, image, video, and voice operations go through CometAPI. GigaChat is used for presentation generation. OpenAI is a fallback option."
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            
             <Form form={apiKeysForm} layout="vertical" onFinish={handleSaveApiKeys}>
               <Form.Item
-                name="openai_api_key"
-                label="OpenAI API Key"
-                extra="Leave empty to keep current key"
+                name="cometapi_api_key"
+                label="CometAPI API Key (Primary)"
+                extra="Main provider for text/image/video/voice operations"
               >
                 <Input.Password 
                   placeholder="sk-..." 
@@ -309,9 +360,20 @@ function SettingsPage() {
                 />
               </Form.Item>
               <Form.Item
-                name="qwen_api_key"
-                label="Qwen API Key (DashScope)"
-                extra="Leave empty to keep current key"
+                name="gigachat_credentials"
+                label="GigaChat Credentials (Base64)"
+                extra="For presentation generation. Format: Base64(client_id:client_secret)"
+              >
+                <Input.Password 
+                  placeholder="Base64 encoded credentials" 
+                  autoComplete="off"
+                />
+              </Form.Item>
+              <Divider />
+              <Form.Item
+                name="openai_api_key"
+                label="OpenAI API Key (Fallback)"
+                extra="Used when CometAPI is not configured"
               >
                 <Input.Password 
                   placeholder="sk-..." 
@@ -330,65 +392,13 @@ function SettingsPage() {
           </Card>
 
           {/* API Settings */}
-          <Card title="API Settings">
+          <Card title="⚙️ API Settings">
             <Form form={apiForm} layout="vertical" onFinish={handleSaveApi}>
-              <Form.Item
-                name="default_ai_provider"
-                label="Default AI Provider"
-                rules={[{ required: true }]}
-              >
-                <Select>
-                  <Select.Option value="openai">OpenAI</Select.Option>
-                  <Select.Option value="qwen">Qwen (Alibaba)</Select.Option>
-                </Select>
-              </Form.Item>
-              <Divider />
-              <Form.Item
-                name="default_gpt_model"
-                label="Default GPT Model (OpenAI)"
-                rules={[{ required: true }]}
-              >
-                <Select>
-                  <Select.Option value="gpt-4o">GPT-4o</Select.Option>
-                  <Select.Option value="gpt-4o-mini">GPT-4o-mini</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item
-                name="default_qwen_model"
-                label="Default Qwen Model"
-                rules={[{ required: true }]}
-              >
-                <Select>
-                  <Select.Option value="qwen-turbo">Qwen Turbo (Fast)</Select.Option>
-                  <Select.Option value="qwen-plus">Qwen Plus (Balanced)</Select.Option>
-                  <Select.Option value="qwen-max">Qwen Max (Smart)</Select.Option>
-                </Select>
-              </Form.Item>
-              <Divider />
-              <Form.Item
-                name="default_image_model"
-                label="Default Image Model"
-                rules={[{ required: true }]}
-              >
-                <Select>
-                  <Select.Option value="dall-e-3">DALL-E 3</Select.Option>
-                </Select>
-              </Form.Item>
-              <Form.Item
-                name="default_video_model"
-                label="Default Video Model"
-                rules={[{ required: true }]}
-              >
-                <Select>
-                  <Select.Option value="sora-2">Sora 2</Select.Option>
-                  <Select.Option value="sora-2-pro">Sora 2 Pro</Select.Option>
-                </Select>
-              </Form.Item>
-              <Divider />
               <Form.Item
                 name="max_context_messages"
                 label="Max Context Messages"
                 rules={[{ required: true }]}
+                extra="Number of messages to keep in conversation context"
               >
                 <InputNumber min={1} max={50} style={{ width: '100%' }} />
               </Form.Item>
@@ -396,6 +406,7 @@ function SettingsPage() {
                 name="context_ttl_seconds"
                 label="Context TTL (seconds)"
                 rules={[{ required: true }]}
+                extra="How long to keep conversation context"
               >
                 <InputNumber min={60} style={{ width: '100%' }} />
               </Form.Item>
@@ -403,6 +414,7 @@ function SettingsPage() {
                 name="openai_timeout"
                 label="API Timeout (seconds)"
                 rules={[{ required: true }]}
+                extra="Timeout for API requests"
               >
                 <InputNumber min={30} max={300} style={{ width: '100%' }} />
               </Form.Item>
@@ -415,16 +427,24 @@ function SettingsPage() {
           </Card>
 
           {/* Info Card */}
-          <Card title="Information" style={{ marginTop: 24 }}>
+          <Card title="ℹ️ Provider Information" style={{ marginTop: 24 }}>
             <Text type="secondary">
-              Changes to settings take effect immediately. Be careful when
-              modifying limits as it affects all users without custom limits.
+              <strong>CometAPI</strong> — unified gateway to 500+ AI models including:
+              <ul style={{ marginLeft: 20, marginTop: 8 }}>
+                <li><strong>Qwen-3-Max</strong> — text generation (multilingual, context-aware)</li>
+                <li><strong>DALL-E 3</strong> — high-quality image generation</li>
+                <li><strong>Sora 2</strong> — video generation (4-12 seconds)</li>
+                <li><strong>Whisper</strong> — speech recognition (25+ languages)</li>
+              </ul>
             </Text>
-            <br /><br />
+            <br />
             <Text type="secondary">
-              <strong>AI Providers:</strong><br />
-              • <strong>OpenAI</strong> - GPT-4o, DALL-E 3, Sora, Whisper<br />
-              • <strong>Qwen</strong> - Text generation only (Alibaba Cloud)
+              <strong>GigaChat</strong> — Sber's AI model:
+              <ul style={{ marginLeft: 20, marginTop: 8 }}>
+                <li>Excellent Russian language support</li>
+                <li>Presentation structure generation</li>
+                <li>Requires separate credentials from developers.sber.ru</li>
+              </ul>
             </Text>
           </Card>
         </Col>

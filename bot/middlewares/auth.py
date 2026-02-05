@@ -131,7 +131,7 @@ class AuthMiddleware(BaseMiddleware):
                     channel_username = config_settings.telegram_channel_username
                 
                 if channel_id:
-                    is_subscribed = await subscription_service.check_subscription(
+                    is_subscribed = await subscription_service.check_channel_subscription(
                         bot, user.id, channel_id
                     )
                     data['is_subscribed'] = is_subscribed

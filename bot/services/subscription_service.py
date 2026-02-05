@@ -37,6 +37,48 @@ class SubscriptionService:
         """
         return await self.check_premium(telegram_id)
     
+    async def check_channel_subscription(self, bot, user_id: int, channel_id: str) -> bool:
+        """
+        Check if user is subscribed to a Telegram channel.
+        
+        Args:
+            bot: Telegram bot instance
+            user_id: Telegram user ID
+            channel_id: Channel ID or username
+            
+        Returns:
+            True if user is subscribed to channel
+        """
+        try:
+            member = await bot.get_chat_member(channel_id, user_id)
+            return member.status in ('member', 'administrator', 'creator')
+        except Exception as e:
+            logger.error("Failed to check channel subscription", error=str(e), user_id=user_id, channel_id=channel_id)
+            return True  # Allow if can't check
+    
+    async def get_subscription_message(self, language: str = "ru") -> str:
+        """
+        Get message asking user to subscribe to channel.
+        
+        Args:
+            language: User language
+            
+        Returns:
+            Subscription request message
+        """
+        if language == "ru":
+            return (
+                "📢 <b>Подписка на канал</b>\n\n"
+                "Для использования бота необходимо подписаться на наш канал.\n"
+                "После подписки нажмите кнопку «Проверить подписку»."
+            )
+        else:
+            return (
+                "📢 <b>Channel Subscription</b>\n\n"
+                "To use the bot, you need to subscribe to our channel.\n"
+                "After subscribing, click the «Check Subscription» button."
+            )
+    
     async def check_premium(self, telegram_id: int) -> bool:
         """
         Check if user has active premium subscription.
@@ -371,5 +413,5 @@ class SubscriptionService:
 
 
 # Global service instances
-premium_service = SubscriptionService()
-subscription_service = premium_service  # Alias for compatibility
+subscription_service = SubscriptionService()
+premium_service = subscription_service  # Alias for compatibility

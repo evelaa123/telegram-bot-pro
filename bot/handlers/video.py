@@ -83,16 +83,16 @@ async def callback_video_model(callback: CallbackQuery):
     language = await user_service.get_user_language(user.id)
     
     if language == "ru":
-        model_name = "Sora 2" if model == "sora-2" else "Sora 2 Pro"
+        mode_name = "Быстрый режим" if model == "sora-2" else "Высокое качество"
         await callback.message.edit_text(
-            f"🎬 <b>Модель: {model_name}</b>\n\n"
+            f"🎬 <b>Режим: {mode_name}</b>\n\n"
             "Выберите длительность видео:",
             reply_markup=get_video_duration_keyboard(language)
         )
     else:
-        model_name = "Sora 2 (Fast)" if model == "sora-2" else "Sora 2 Pro (Quality)"
+        mode_name = "Fast mode" if model == "sora-2" else "High quality"
         await callback.message.edit_text(
-            f"🎬 <b>Model: {model_name}</b>\n\n"
+            f"🎬 <b>Mode: {mode_name}</b>\n\n"
             "Choose video duration:",
             reply_markup=get_video_duration_keyboard(language)
         )
@@ -120,9 +120,10 @@ async def callback_video_duration(callback: CallbackQuery):
     language = await user_service.get_user_language(user.id)
     
     if language == "ru":
+        mode_name = "Быстрый режим" if model == "sora-2" else "Высокое качество"
         await callback.message.edit_text(
             f"🎬 <b>Настройки видео:</b>\n"
-            f"• Модель: {'Sora 2' if model == 'sora-2' else 'Sora 2 Pro'}\n"
+            f"• Режим: {mode_name}\n"
             f"• Длительность: {duration} сек\n"
             f"• Разрешение: 1280x720\n\n"
             "Теперь опишите видео, которое хотите создать.\n\n"
@@ -133,9 +134,10 @@ async def callback_video_duration(callback: CallbackQuery):
             "• Только для аудитории 18+"
         )
     else:
+        mode_name = "Fast mode" if model == "sora-2" else "High quality"
         await callback.message.edit_text(
             f"🎬 <b>Video settings:</b>\n"
-            f"• Model: {'Sora 2 (Fast)' if model == 'sora-2' else 'Sora 2 Pro (Quality)'}\n"
+            f"• Mode: {mode_name}\n"
             f"• Duration: {duration} sec\n"
             f"• Resolution: 1280x720\n\n"
             "Now describe the video you want to create.\n\n"
@@ -303,11 +305,14 @@ async def queue_video_generation(
     else:
         time_estimate = "3-10 минут" if language == "ru" else "3-10 minutes"
     
+    mode_name_ru = "Быстрый режим" if model == "sora-2" else "Высокое качество"
+    mode_name_en = "Fast mode" if model == "sora-2" else "High quality"
+    
     if language == "ru":
         await message.answer(
             "🎬 <b>Видео поставлено в очередь на генерацию!</b>\n\n"
             f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Модель: {'Sora 2' if model == 'sora-2' else 'Sora 2 Pro'}\n"
+            f"🤖 Режим: {mode_name_ru}\n"
             f"⏱ Длительность: {duration} сек\n\n"
             f"⏳ Примерное время генерации: {time_estimate}\n\n"
             "Я отправлю вам готовое видео, когда оно будет готово.\n"
@@ -317,7 +322,7 @@ async def queue_video_generation(
         await message.answer(
             "🎬 <b>Video queued for generation!</b>\n\n"
             f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Model: {'Sora 2' if model == 'sora-2' else 'Sora 2 Pro'}\n"
+            f"🤖 Mode: {mode_name_en}\n"
             f"⏱ Duration: {duration} sec\n\n"
             f"⏳ Estimated time: {time_estimate}\n\n"
             "I'll send you the finished video when it's ready.\n"
