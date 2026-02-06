@@ -30,9 +30,12 @@ class Settings(BaseSettings):
     # Subscription Check
     subscription_check_enabled: bool = Field(False, description="Enable channel subscription check")
     
-    # GigaChat Configuration (For presentations)
+    # GigaChat Configuration (For text generation in Russian)
     gigachat_credentials: Optional[str] = Field(None, description="GigaChat Base64 encoded credentials")
     gigachat_scope: str = Field("GIGACHAT_API_PERS", description="GigaChat API scope")
+    
+    # Gamma API Configuration (For presentations)
+    gamma_api_key: Optional[str] = Field(None, description="Gamma API Key for presentation generation")
     
     # OpenAI Configuration (Legacy/Fallback)
     openai_api_key: str = Field("", description="OpenAI API Key (fallback)")
