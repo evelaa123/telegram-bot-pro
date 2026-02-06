@@ -184,7 +184,8 @@ class GammaService:
                 headers=headers,
                 json=payload
             ) as response:
-                if response.status != 200:
+                # 200 OK or 201 Created are both success
+                if response.status not in (200, 201):
                     error_text = await response.text()
                     logger.error("Gamma API error", status=response.status, error=error_text)
                     raise Exception(f"Gamma API error: {error_text}")
