@@ -480,7 +480,7 @@ class CometAPIService:
                 "status": data.get("status"),
                 "progress": data.get("progress", 0),
                 "error_message": error_message,
-                "output_url": data.get("output_url")  # URL when completed
+                "output_url": data.get("video_url") or data.get("url") or data.get("result_url")
             }
             
         except Exception as e:

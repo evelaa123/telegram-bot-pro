@@ -66,7 +66,7 @@ class PresentationService:
             
             # Get URLs from result
             gamma_url = result.get("gammaUrl")
-            pptx_url = result.get("pptxUrl")
+            pptx_url = result.get("exportUrl") or result.get("pptxUrl")  # Проверяем оба варианта
             
             if not pptx_url:
                 # If no PPTX URL, we can still return the Gamma URL
