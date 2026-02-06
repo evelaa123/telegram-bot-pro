@@ -1,43 +1,29 @@
-# Telegram AI Bot Dockerfile
-# Optimized for faster builds with better layer caching
+# Build stage
+FROM node:20-alpine as build
 
-FROM python:3.11-slim AS base
-
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
-ENV PIP_NO_CACHE_DIR=1
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Install system dependencies in a single layer
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libpq-dev \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# Create app directory and non-root user early
 WORKDIR /app
-RUN adduser --disabled-password --gecos '' --home /app appuser
 
-# Dependencies stage - cached unless requirements.txt changes
-FROM base AS dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy package files
+COPY package*.json ./
 
-# Final stage
-FROM dependencies AS final
+# Install dependencies
+RUN npm ci
 
-# Copy application code (this layer changes most frequently)
-COPY --chown=appuser:appuser . .
+# Copy source code
+COPY . .
 
-USER appuser
+# Build the application
+RUN npm run build
 
-# Health check for container orchestration
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+# Production stage
+FROM nginx:alpine
 
-# Default command (can be overridden in docker-compose)
-CMD ["python", "main.py"]
+# Copy built files
+COPY --from=build /app/dist /usr/share/nginx/html
+
+# Copy nginx config
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

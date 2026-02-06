@@ -136,80 +136,18 @@ function SupportPage() {
     return `User ${conv.user_telegram_id}`;
   };
 
-  // Parse and render message content with photo support
-  const renderMessageContent = (messageText: string, isAdmin: boolean) => {
-    // Check for photo markers: [PHOTO:file_id]
-    const photoRegex = /\[PHOTO:([^\]]+)\]/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
-    let keyIndex = 0;
-
-    while ((match = photoRegex.exec(messageText)) !== null) {
-      // Add text before the photo
-      if (match.index > lastIndex) {
-        const textBefore = messageText.slice(lastIndex, match.index).trim();
-        if (textBefore) {
-          parts.push(
-            <Text key={`text-${keyIndex++}`} style={{ color: isAdmin ? '#fff' : '#000', whiteSpace: 'pre-wrap', display: 'block' }}>
-              {textBefore}
-            </Text>
-          );
-        }
-      }
-
-      // Add photo
-      const fileId = match[1];
-      parts.push(
-        <div key={`photo-${keyIndex++}`} style={{ margin: '8px 0' }}>
-          <img 
-            src={`/api/support/photo/${fileId}`} 
-            alt="User photo"
-            style={{ 
-              maxWidth: '100%', 
-              maxHeight: 300, 
-              borderRadius: 8,
-              cursor: 'pointer'
-            }}
-            onClick={() => window.open(`/api/support/photo/${fileId}`, '_blank')}
-            onError={(e) => {
-              // Show placeholder if image fails to load
-              const target = e.target as HTMLImageElement;
-              target.style.display = 'none';
-              target.parentElement!.innerHTML = '<div style="padding: 12px; background: #f5f5f5; border-radius: 8px; text-align: center;"><span>📷 Photo (failed to load)</span></div>';
-            }}
-          />
-        </div>
-      );
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining text after the last photo
-    if (lastIndex < messageText.length) {
-      const textAfter = messageText.slice(lastIndex).trim();
-      if (textAfter) {
-        parts.push(
-          <Text key={`text-${keyIndex++}`} style={{ color: isAdmin ? '#fff' : '#000', whiteSpace: 'pre-wrap', display: 'block' }}>
-            {textAfter}
-          </Text>
-        );
-      }
-    }
-
-    // If no photos found, just render the text
-    if (parts.length === 0) {
-      return (
-        <Text style={{ color: isAdmin ? '#fff' : '#000', whiteSpace: 'pre-wrap' }}>
-          {messageText}
-        </Text>
-      );
-    }
-
-    return <>{parts}</>;
-  };
-
   const selectedConversation = conversations.find(c => c.user_id === selectedUserId);
+
+  // Parse message to extract photo and text
+  const parseMessage = (message: string) => {
+    const photoMatch = message.match(/\[PHOTO:([^\]]+)\]/);
+    if (photoMatch) {
+      const photoFileId = photoMatch[1];
+      const textPart = message.replace(/\[PHOTO:[^\]]+\]\n?/, '').trim();
+      return { hasPhoto: true, photoFileId, text: textPart };
+    }
+    return { hasPhoto: false, photoFileId: null, text: message };
+  };
 
   return (
     <div style={{ padding: 0, height: 'calc(100vh - 64px)' }}>
@@ -324,39 +262,72 @@ function SupportPage() {
                 ) : messages.length === 0 ? (
                   <Empty description="No messages yet" />
                 ) : (
-                  messages.map((msg) => (
-                    <div
-                      key={msg.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: !msg.is_from_user ? 'flex-end' : 'flex-start',
-                      }}
-                    >
-                      <Card
-                        size="small"
+                  messages.map((msg) => {
+                    const { hasPhoto, photoFileId, text } = parseMessage(msg.message);
+                    return (
+                      <div
+                        key={msg.id}
                         style={{
-                          maxWidth: '70%',
-                          background: !msg.is_from_user ? '#1890ff' : '#fff',
-                          borderRadius: 12,
-                          border: !msg.is_from_user ? 'none' : '1px solid #f0f0f0',
+                          display: 'flex',
+                          justifyContent: !msg.is_from_user ? 'flex-end' : 'flex-start',
                         }}
-                        bodyStyle={{ padding: '8px 12px' }}
                       >
-                        {renderMessageContent(msg.message, !msg.is_from_user)}
-                        <br />
-                        <Text 
-                          type="secondary" 
-                          style={{ 
-                            fontSize: 10, 
-                            color: !msg.is_from_user ? 'rgba(255,255,255,0.7)' : undefined 
+                        <Card
+                          size="small"
+                          style={{
+                            maxWidth: '70%',
+                            background: !msg.is_from_user ? '#1890ff' : '#fff',
+                            borderRadius: 12,
+                            border: !msg.is_from_user ? 'none' : '1px solid #f0f0f0',
                           }}
+                          bodyStyle={{ padding: '8px 12px' }}
                         >
-                          {dayjs(msg.created_at).format('HH:mm')}
-                          {!msg.is_from_user && msg.admin_username && ` · ${msg.admin_username}`}
-                        </Text>
-                      </Card>
-                    </div>
-                  ))
+                          {hasPhoto && (
+                            <div style={{ marginBottom: text ? 8 : 0 }}>
+                              <img
+                                src={`/api/support/photo/${photoFileId}`}
+                                alt="Attached"
+                                style={{
+                                  maxWidth: '100%',
+                                  maxHeight: 300,
+                                  borderRadius: 8,
+                                  cursor: 'pointer'
+                                }}
+                                onClick={() => window.open(`/api/support/photo/${photoFileId}`, '_blank')}
+                                onError={(e) => {
+                                  // Fallback to placeholder if image fails to load
+                                  const target = e.target as HTMLImageElement;
+                                  target.style.display = 'none';
+                                  target.parentElement!.innerHTML = `
+                                    <div style="padding: 8px; background: ${!msg.is_from_user ? 'rgba(255,255,255,0.1)' : '#f5f5f5'}; border-radius: 8px; display: flex; align-items: center; gap: 8px;">
+                                      <span style="font-size: 24px;">🖼️</span>
+                                      <span>Image (expired or unavailable)</span>
+                                    </div>
+                                  `;
+                                }}
+                              />
+                            </div>
+                          )}
+                          {text && (
+                            <Text style={{ color: !msg.is_from_user ? '#fff' : '#000', whiteSpace: 'pre-wrap' }}>
+                              {text}
+                            </Text>
+                          )}
+                          <br />
+                          <Text 
+                            type="secondary" 
+                            style={{ 
+                              fontSize: 10, 
+                              color: !msg.is_from_user ? 'rgba(255,255,255,0.7)' : undefined 
+                            }}
+                          >
+                            {dayjs(msg.created_at).format('HH:mm')}
+                            {!msg.is_from_user && msg.admin_username && ` · ${msg.admin_username}`}
+                          </Text>
+                        </Card>
+                      </div>
+                    );
+                  })
                 )}
                 <div ref={messagesEndRef} />
               </div>
