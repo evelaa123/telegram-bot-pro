@@ -269,7 +269,8 @@ class AIService:
         model: str = None,
         duration: int = 4,
         size: str = "1280x720",
-        telegram_id: int = None
+        telegram_id: int = None,
+        input_reference: bytes = None
     ) -> Dict[str, Any]:
         """
         Create video using CometAPI Official Format (Sora 2).
@@ -280,6 +281,7 @@ class AIService:
             duration: Duration in seconds (4, 8, or 12)
             size: Resolution
             telegram_id: User ID for logging
+            input_reference: Optional reference image bytes for image-to-video animation
             
         Returns:
             Video task info with video_id
@@ -287,12 +289,18 @@ class AIService:
         model = model or self.MODELS["video"]
         
         if self.cometapi.is_configured():
-            logger.info(f"Video creation using CometAPI/{model}", user_id=telegram_id, duration=duration)
+            logger.info(
+                f"Video creation using CometAPI/{model}",
+                user_id=telegram_id,
+                duration=duration,
+                has_reference=input_reference is not None
+            )
             return await self.cometapi.create_video(
                 prompt=prompt,
                 model=model,
                 duration=duration,
-                size=size
+                size=size,
+                input_reference=input_reference
             )
         else:
             logger.info(f"Video creation using OpenAI/{model} (fallback)", user_id=telegram_id)

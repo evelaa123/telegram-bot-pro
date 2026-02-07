@@ -186,12 +186,38 @@ async def process_video_generation(ctx, task_id: int):
             )
             await session.commit()
         
+        # If task has a reference image (animate photo), download it from Telegram
+        input_reference = None
+        if task.reference_image_file_id:
+            try:
+                from aiogram import Bot
+                dl_bot = Bot(token=settings.telegram_bot_token)
+                file = await dl_bot.get_file(task.reference_image_file_id)
+                file_bytes_io = await dl_bot.download_file(file.file_path)
+                import io
+                input_reference = io.BytesIO(file_bytes_io.read()).getvalue()
+                await dl_bot.session.close()
+                logger.info(
+                    "Reference image downloaded for animate",
+                    task_id=task_id,
+                    file_id=task.reference_image_file_id,
+                    size_bytes=len(input_reference)
+                )
+            except Exception as img_err:
+                logger.error(
+                    "Failed to download reference image, proceeding without it",
+                    task_id=task_id,
+                    error=str(img_err)
+                )
+                input_reference = None
+        
         # Create video using AI service (CometAPI or OpenAI fallback)
         video_info = await ai_service.create_video(
             prompt=task.prompt,
             model=task.model,
             duration=task.duration_seconds,
-            telegram_id=telegram_id
+            telegram_id=telegram_id,
+            input_reference=input_reference
         )
         
         video_id = video_info["video_id"]
@@ -283,11 +309,14 @@ async def process_video_generation(ctx, task_id: int):
             )
             await session.commit()
         
+        # Determine request type: VIDEO_ANIMATE if reference image was used, else VIDEO
+        req_type = RequestType.VIDEO_ANIMATE if task.reference_image_file_id else RequestType.VIDEO
+        
         # Increment usage and record request
-        await limit_service.increment_usage(telegram_id, RequestType.VIDEO)
+        await limit_service.increment_usage(telegram_id, req_type)
         await limit_service.record_request(
             telegram_id=telegram_id,
-            request_type=RequestType.VIDEO,
+            request_type=req_type,
             prompt=task.prompt[:500],
             model=task.model,
             status=RequestStatus.SUCCESS
@@ -296,7 +325,8 @@ async def process_video_generation(ctx, task_id: int):
         logger.info(
             "Video generation completed",
             task_id=task_id,
-            video_id=video_id
+            video_id=video_id,
+            is_animate=task.reference_image_file_id is not None
         )
         
     except Exception as e:
@@ -324,16 +354,19 @@ async def process_video_generation(ctx, task_id: int):
         
         bot = Bot(token=settings.telegram_bot_token)
         
+        is_animate = task.reference_image_file_id is not None
         if language == "ru":
+            action_name = "оживления фото" if is_animate else "генерации видео"
+            action_verb = "оживить фото" if is_animate else "сгенерировать видео"
             error_text = (
-                "❌ <b>Ошибка генерации видео</b>\n\n"
-                "К сожалению, не удалось сгенерировать видео.\n"
+                f"❌ <b>Ошибка {action_name}</b>\n\n"
+                f"К сожалению, не удалось {action_verb}.\n"
                 "Лимит не списан. Попробуйте ещё раз."
             )
         else:
             error_text = (
-                "❌ <b>Video Generation Error</b>\n\n"
-                "Unfortunately, video generation failed.\n"
+                f"❌ <b>{'Photo Animation' if is_animate else 'Video Generation'} Error</b>\n\n"
+                f"Unfortunately, {'photo animation' if is_animate else 'video generation'} failed.\n"
                 "Limit not charged. Please try again."
             )
         
@@ -346,9 +379,10 @@ async def process_video_generation(ctx, task_id: int):
         await bot.session.close()
         
         # Record failed request
+        req_type = RequestType.VIDEO_ANIMATE if task.reference_image_file_id else RequestType.VIDEO
         await limit_service.record_request(
             telegram_id=telegram_id,
-            request_type=RequestType.VIDEO,
+            request_type=req_type,
             prompt=task.prompt[:500],
             model=task.model,
             status=RequestStatus.FAILED,

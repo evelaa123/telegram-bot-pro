@@ -9,7 +9,7 @@ from aiogram.enums import ChatAction
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
-from bot.keyboards.inline import get_subscription_keyboard
+from bot.keyboards.inline import get_subscription_keyboard, get_photo_actions_keyboard
 from database.redis_client import redis_client
 from database.models import RequestType, RequestStatus
 from bot.handlers.support import save_support_message
@@ -36,6 +36,12 @@ async def handle_photo_message(message: Message):
     if state == "support_message":
         # User is in support mode - save photo to support
         await handle_support_photo(message, user.id)
+        return
+    
+    # Check if user is in animate_photo state
+    if state and state.startswith("animate_photo_wait"):
+        # User sent a NEW photo to animate
+        await handle_animate_new_photo(message, user.id)
         return
     
     # Otherwise - analyze photo with AI
@@ -176,7 +182,11 @@ async def handle_photo_analysis(message: Message, user_id: int):
         if len(result) > 4000:
             result = result[:4000] + "..."
         
-        await status_msg.edit_text(result)
+        # Show result with Animate button
+        await status_msg.edit_text(
+            result,
+            reply_markup=get_photo_actions_keyboard(photo.file_id, language)
+        )
         
         # Increment usage and record request
         await limit_service.increment_usage(user_id, RequestType.IMAGE)
@@ -228,3 +238,32 @@ async def handle_photo_analysis(message: Message, user_id: int):
             await status_msg.edit_text(error_text)
         except Exception:
             await message.answer(error_text)
+
+
+async def handle_animate_new_photo(message: Message, user_id: int):
+    """
+    Handle photo sent when user is in 'animate_photo_wait' state.
+    User wants to animate this specific photo.
+    """
+    language = await user_service.get_user_language(user_id)
+    
+    photo = message.photo[-1]
+    file_id = photo.file_id
+    
+    # Set state to animate_photo with this file_id, ask for prompt
+    await redis_client.set_user_state(user_id, f"animate_photo:{file_id}")
+    
+    if language == "ru":
+        await message.answer(
+            "🎞 <b>Оживление фото</b>\n\n"
+            "Опишите, как должно двигаться/оживать изображение.\n\n"
+            "<i>Например: \u00abКамера медленно приближается, волосы развеваются на ветру\u00bb</i>\n\n"
+            "Или отправьте просто точку (.) для автоматического оживления."
+        )
+    else:
+        await message.answer(
+            "🎞 <b>Animate Photo</b>\n\n"
+            "Describe how the image should move/animate.\n\n"
+            "<i>Example: 'Camera slowly zooms in, hair blowing in the wind'</i>\n\n"
+            "Or send just a dot (.) for automatic animation."
+        )

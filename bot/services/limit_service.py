@@ -338,11 +338,18 @@ class LimitService:
     ) -> str:
         """
         Get formatted limits text for user display.
+        Shows subscription status and remaining daily limits.
         
         Returns:
-            Formatted string with limits info
+            Formatted string with subscription + limits info
         """
         remaining, limits, reset_time = await self.get_remaining_limits(telegram_id)
+        
+        # Get subscription info
+        from bot.services.subscription_service import subscription_service
+        sub_info = await subscription_service.get_subscription_info(telegram_id)
+        is_premium = sub_info.get("is_premium", False)
+        expires_at = sub_info.get("expires_at")
         
         # Calculate time until reset
         now = datetime.utcnow()
@@ -357,7 +364,17 @@ class LimitService:
             return f"{rem}/{lim}"
         
         if language == "ru":
-            text = (
+            # Subscription header
+            if is_premium and expires_at:
+                expires_str = expires_at.strftime("%d.%m.%Y")
+                sub_text = (
+                    f"💎 <b>Подписка: Premium</b>\n"
+                    f"📅 Действует до: {expires_str}\n\n"
+                )
+            else:
+                sub_text = "📝 <b>Подписка: Бесплатный план</b>\n\n"
+            
+            text = sub_text + (
                 "📊 <b>Ваши лимиты на сегодня:</b>\n\n"
                 f"💬 Текст: {format_limit(remaining['text'], limits['text'], 'ru')}\n"
                 f"🖼 Изображения: {format_limit(remaining['image'], limits['image'], 'ru')}\n"
@@ -373,12 +390,21 @@ class LimitService:
                 text += f"🎞 Оживление фото: {format_limit(remaining.get('video_animate', 0), va_lim, 'ru')}\n"
             if lv_lim != 0:
                 text += f"🎥 Длинное видео: {format_limit(remaining.get('long_video', 0), lv_lim, 'ru')}\n"
-            text += (
-                f"\n🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м\n\n"
-                "💳 Оформите подписку для увеличения лимитов!"
-            )
+            text += f"\n🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м"
+            if not is_premium:
+                text += "\n\n💳 Оформите подписку для увеличения лимитов!"
         else:
-            text = (
+            # Subscription header
+            if is_premium and expires_at:
+                expires_str = expires_at.strftime("%Y-%m-%d")
+                sub_text = (
+                    f"💎 <b>Subscription: Premium</b>\n"
+                    f"📅 Valid until: {expires_str}\n\n"
+                )
+            else:
+                sub_text = "📝 <b>Subscription: Free Plan</b>\n\n"
+            
+            text = sub_text + (
                 "📊 <b>Your Daily Limits:</b>\n\n"
                 f"💬 Text: {format_limit(remaining['text'], limits['text'], 'en')}\n"
                 f"🖼 Images: {format_limit(remaining['image'], limits['image'], 'en')}\n"
@@ -393,10 +419,9 @@ class LimitService:
                 text += f"🎞 Animate Photo: {format_limit(remaining.get('video_animate', 0), va_lim, 'en')}\n"
             if lv_lim != 0:
                 text += f"🎥 Long Video: {format_limit(remaining.get('long_video', 0), lv_lim, 'en')}\n"
-            text += (
-                f"\n🔄 Limits reset in: {hours_left}h {minutes_left}m\n\n"
-                "💳 Get subscription for more limits!"
-            )
+            text += f"\n🔄 Limits reset in: {hours_left}h {minutes_left}m"
+            if not is_premium:
+                text += "\n\n💳 Get subscription for more limits!"
         
         return text
     

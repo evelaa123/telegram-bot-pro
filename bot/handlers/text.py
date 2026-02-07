@@ -130,7 +130,11 @@ async def handle_text_message(message: Message):
         elif state.startswith("animate_photo:"):
             file_id = state.split(":", 1)[1]
             from bot.handlers.video import queue_animate_photo
-            prompt = text if text.strip() else "Animate this photo with gentle natural motion"
+            # Treat "." or empty/whitespace as auto-animate
+            if not text.strip() or text.strip() == ".":
+                prompt = "Animate this photo with gentle natural motion, subtle camera movement"
+            else:
+                prompt = text
             await queue_animate_photo(message, user.id, file_id, prompt)
             return
         

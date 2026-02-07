@@ -284,6 +284,52 @@ async def grant_premium(
             amount_rub=0
         )
         
+        # Notify user via Telegram about their new premium status
+        try:
+            from aiogram import Bot
+            bot = Bot(token=settings.telegram_bot_token)
+            
+            # Get user language
+            language = "ru"
+            try:
+                language = await user_service.get_user_language(telegram_id)
+            except Exception:
+                pass
+            
+            if language == "ru":
+                notify_text = (
+                    "🎉 <b>Поздравляем!</b>\n\n"
+                    f"Вам выдана подписка <b>Premium</b> на <b>{request.months}</b> мес.!\n\n"
+                    "✅ Теперь вам доступны:\n"
+                    "• Безлимитные текстовые запросы\n"
+                    "• Безлимитная генерация изображений\n"
+                    "• Оживление фото (image-to-video)\n"
+                    "• Длинные видео (до 36 сек)\n"
+                    "• И многое другое!\n\n"
+                    "Используйте /limits чтобы увидеть ваши лимиты."
+                )
+            else:
+                notify_text = (
+                    "🎉 <b>Congratulations!</b>\n\n"
+                    f"You've been granted <b>Premium</b> subscription for <b>{request.months}</b> month(s)!\n\n"
+                    "✅ You now have access to:\n"
+                    "• Unlimited text requests\n"
+                    "• Unlimited image generation\n"
+                    "• Photo animation (image-to-video)\n"
+                    "• Long videos (up to 36 sec)\n"
+                    "• And much more!\n\n"
+                    "Use /limits to see your limits."
+                )
+            
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=notify_text,
+                parse_mode="HTML"
+            )
+            await bot.session.close()
+        except Exception as notify_err:
+            logger.warning("Failed to notify user about premium grant", error=str(notify_err))
+        
         logger.info(
             "Premium granted by admin",
             telegram_id=telegram_id,
@@ -324,6 +370,41 @@ async def revoke_premium(
         user.subscription_type = SubscriptionType.FREE
         user.subscription_expires_at = None
         await session.commit()
+    
+    # Notify user via Telegram about premium revocation
+    try:
+        from aiogram import Bot as AioBot
+        bot = AioBot(token=settings.telegram_bot_token)
+        
+        language = "ru"
+        try:
+            language = await user_service.get_user_language(telegram_id)
+        except Exception:
+            pass
+        
+        if language == "ru":
+            notify_text = (
+                "ℹ️ <b>Изменение подписки</b>\n\n"
+                "Ваша подписка Premium была отменена.\n"
+                "Теперь действуют лимиты бесплатного плана.\n\n"
+                "Используйте /limits чтобы увидеть ваши текущие лимиты."
+            )
+        else:
+            notify_text = (
+                "ℹ️ <b>Subscription Update</b>\n\n"
+                "Your Premium subscription has been revoked.\n"
+                "Free plan limits now apply.\n\n"
+                "Use /limits to see your current limits."
+            )
+        
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=notify_text,
+            parse_mode="HTML"
+        )
+        await bot.session.close()
+    except Exception as notify_err:
+        logger.warning("Failed to notify user about premium revocation", error=str(notify_err))
     
     logger.info(
         "Premium revoked by admin",
