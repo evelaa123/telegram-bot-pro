@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Avatar, Dropdown, theme, Typography } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, theme, Typography, Button, Space } from 'antd';
 import {
   DashboardOutlined,
   UserOutlined,
@@ -11,8 +11,11 @@ import {
   MenuUnfoldOutlined,
   ApiOutlined,
   MessageOutlined,
+  CrownOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/authStore';
+import { useLangStore } from '../store/langStore';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -22,6 +25,7 @@ function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { admin, logout } = useAuthStore();
+  const { lang, setLang, t } = useLangStore();
   const {
     token: { colorBgContainer },
   } = theme.useToken();
@@ -30,32 +34,37 @@ function AdminLayout() {
     {
       key: '/',
       icon: <DashboardOutlined />,
-      label: 'Dashboard',
+      label: t('menu.dashboard'),
     },
     {
       key: '/users',
       icon: <UserOutlined />,
-      label: 'Users',
+      label: t('menu.users'),
     },
     {
       key: '/support',
       icon: <MessageOutlined />,
-      label: 'Support',
+      label: t('menu.support'),
     },
     {
       key: '/tasks',
       icon: <OrderedListOutlined />,
-      label: 'Tasks',
+      label: t('menu.tasks'),
     },
     {
       key: '/api-usage',
       icon: <ApiOutlined />,
-      label: 'API Usage',
+      label: t('menu.api_usage'),
+    },
+    {
+      key: '/subscriptions',
+      icon: <CrownOutlined />,
+      label: t('menu.subscriptions'),
     },
     {
       key: '/settings',
       icon: <SettingOutlined />,
-      label: 'Settings',
+      label: t('menu.settings'),
     },
   ];
 
@@ -63,12 +72,12 @@ function AdminLayout() {
     {
       key: 'profile',
       icon: <UserOutlined />,
-      label: 'Profile',
+      label: t('header.profile'),
     },
     {
       key: 'logout',
       icon: <LogoutOutlined />,
-      label: 'Logout',
+      label: t('header.logout'),
       danger: true,
     },
   ];
@@ -82,6 +91,10 @@ function AdminLayout() {
       logout();
       navigate('/login');
     }
+  };
+
+  const toggleLang = () => {
+    setLang(lang === 'en' ? 'ru' : 'en');
   };
 
   return (
@@ -104,7 +117,7 @@ function AdminLayout() {
               whiteSpace: 'nowrap',
             }}
           >
-            {collapsed ? 'AI' : 'AI Bot Admin'}
+            {collapsed ? t('header.title_short') : t('header.title')}
           </Text>
         </div>
         <Menu
@@ -131,25 +144,35 @@ function AdminLayout() {
           >
             {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
           </div>
-          <Dropdown
-            menu={{
-              items: userMenuItems,
-              onClick: handleUserMenuClick,
-            }}
-            trigger={['click']}
-          >
-            <div
-              style={{
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}
+          <Space size="middle">
+            <Button
+              type="text"
+              icon={<GlobalOutlined />}
+              onClick={toggleLang}
+              style={{ fontWeight: 600 }}
             >
-              <Avatar icon={<UserOutlined />} />
-              <Text>{admin?.username}</Text>
-            </div>
-          </Dropdown>
+              {lang === 'en' ? 'RU' : 'EN'}
+            </Button>
+            <Dropdown
+              menu={{
+                items: userMenuItems,
+                onClick: handleUserMenuClick,
+              }}
+              trigger={['click']}
+            >
+              <div
+                style={{
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <Avatar icon={<UserOutlined />} />
+                <Text>{admin?.username}</Text>
+              </div>
+            </Dropdown>
+          </Space>
         </Header>
         <Content>
           <Outlet />

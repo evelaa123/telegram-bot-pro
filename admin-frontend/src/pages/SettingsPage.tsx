@@ -15,7 +15,9 @@ import {
   Alert,
   Modal,
   Space,
+  Tooltip,
 } from 'antd';
+import { InfoCircleOutlined } from '@ant-design/icons';
 import { settingsApi } from '../services/api';
 
 const { Title, Text } = Typography;
@@ -26,6 +28,15 @@ interface GlobalLimits {
   video: number;
   voice: number;
   document: number;
+  presentation: number;
+  premium_text: number;
+  premium_image: number;
+  premium_video: number;
+  premium_voice: number;
+  premium_document: number;
+  premium_presentation: number;
+  premium_video_animate: number;
+  premium_long_video: number;
 }
 
 interface BotSettings {
@@ -132,7 +143,6 @@ function SettingsPage() {
   const handleSaveApiKeys = async (values: { cometapi_api_key?: string; gigachat_credentials?: string; openai_api_key?: string }) => {
     setSaving(true);
     try {
-      // Only send keys that were actually entered
       const keysToUpdate: { cometapi_api_key?: string; gigachat_credentials?: string; openai_api_key?: string } = {};
       if (values.cometapi_api_key && values.cometapi_api_key.trim()) {
         keysToUpdate.cometapi_api_key = values.cometapi_api_key.trim();
@@ -152,11 +162,8 @@ function SettingsPage() {
       const response = await settingsApi.updateApiKeys(keysToUpdate);
       message.success(response.data.message || 'API keys updated');
       
-      // Refresh status
       const statusResponse = await settingsApi.getApiKeysStatus();
       setApiKeysStatus(statusResponse.data);
-      
-      // Clear form
       apiKeysForm.resetFields();
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to save API keys');
@@ -170,10 +177,7 @@ function SettingsPage() {
     try {
       const response = await settingsApi.convertGigachatCredentials(values.client_id, values.client_secret);
       const base64Credentials = response.data.base64_credentials;
-      
-      // Auto-fill the credentials field
       apiKeysForm.setFieldsValue({ gigachat_credentials: base64Credentials });
-      
       message.success('Credentials converted! Click "Update API Keys" to save.');
       setGigachatModalOpen(false);
       gigachatConvertForm.resetFields();
@@ -183,6 +187,8 @@ function SettingsPage() {
       setConverting(false);
     }
   };
+
+  const limitTooltip = '-1 = unlimited (no daily limit)';
 
   if (loading) {
     return (
@@ -214,9 +220,6 @@ function SettingsPage() {
                   <p><strong>Video:</strong> Configurable (default: sora-2)</p>
                   <p><strong>Voice:</strong> Configurable (default: whisper-1)</p>
                   <p><strong>Presentations:</strong> GigaChat (separate API)</p>
-                  <p style={{ marginTop: 8, color: '#666' }}>
-                    <em>Configure models in the "AI Models Configuration" section below.</em>
-                  </p>
                 </div>
               }
               type="info"
@@ -269,9 +272,9 @@ function SettingsPage() {
             )}
           </Card>
 
-          {/* Global Limits */}
+          {/* Global Limits - Free Users */}
           <Card
-            title="📊 Global Limits (per user per day)"
+            title="📊 Free User Limits (per day)"
             style={{ marginBottom: 24 }}
           >
             <Form
@@ -279,44 +282,102 @@ function SettingsPage() {
               layout="vertical"
               onFinish={handleSaveLimits}
             >
-              <Form.Item
-                name="text"
-                label="Text Requests"
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item
-                name="image"
-                label="Image Generations"
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item
-                name="video"
-                label="Video Generations"
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item
-                name="voice"
-                label="Voice Transcriptions"
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item
-                name="document"
-                label="Document Processing"
-                rules={[{ required: true }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item name="text" label="Text" rules={[{ required: true }]}>
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="image" label="Images" rules={[{ required: true }]}>
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="video" label="Videos" rules={[{ required: true }]}>
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item name="voice" label="Voice" rules={[{ required: true }]}>
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="document" label="Documents" rules={[{ required: true }]}>
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="presentation" label="Presentations" rules={[{ required: true }]}>
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              <Divider orientation="left">
+                💎 Premium User Limits{' '}
+                <Tooltip title={limitTooltip}>
+                  <InfoCircleOutlined />
+                </Tooltip>
+              </Divider>
+              <Alert
+                message="Use -1 for unlimited"
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item name="premium_text" label="Text">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="premium_image" label="Images">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="premium_video" label="Videos">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item name="premium_voice" label="Voice">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="premium_document" label="Documents">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="premium_presentation" label="Presentations">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item name="premium_video_animate" label="Animate Photo">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col span={8}>
+                  <Form.Item name="premium_long_video" label="Long Video">
+                    <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
               <Form.Item>
                 <Button type="primary" htmlType="submit" loading={saving}>
-                  Save Limits
+                  Save All Limits
                 </Button>
               </Form.Item>
             </Form>
@@ -325,39 +386,19 @@ function SettingsPage() {
           {/* Bot Settings */}
           <Card title="🤖 Bot Settings">
             <Form form={botForm} layout="vertical" onFinish={handleSaveBot}>
-              <Form.Item
-                name="is_enabled"
-                label="Bot Enabled"
-                valuePropName="checked"
-              >
+              <Form.Item name="is_enabled" label="Bot Enabled" valuePropName="checked">
                 <Switch />
               </Form.Item>
-              <Form.Item
-                name="disabled_message"
-                label="Disabled Message"
-                rules={[{ required: true }]}
-              >
+              <Form.Item name="disabled_message" label="Disabled Message" rules={[{ required: true }]}>
                 <Input.TextArea rows={2} />
               </Form.Item>
-              <Form.Item
-                name="subscription_check_enabled"
-                label="Subscription Check"
-                valuePropName="checked"
-              >
+              <Form.Item name="subscription_check_enabled" label="Subscription Check" valuePropName="checked">
                 <Switch />
               </Form.Item>
-              <Form.Item
-                name="channel_id"
-                label="Channel ID"
-                rules={[{ required: true }]}
-              >
+              <Form.Item name="channel_id" label="Channel ID" rules={[{ required: true }]}>
                 <InputNumber style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item
-                name="channel_username"
-                label="Channel Username"
-                rules={[{ required: true }]}
-              >
+              <Form.Item name="channel_username" label="Channel Username" rules={[{ required: true }]}>
                 <Input placeholder="@channel_name" />
               </Form.Item>
               <Form.Item>
@@ -371,10 +412,7 @@ function SettingsPage() {
 
         <Col span={12}>
           {/* API Keys Card */}
-          <Card 
-            title="🔑 API Keys" 
-            style={{ marginBottom: 24 }}
-          >
+          <Card title="🔑 API Keys" style={{ marginBottom: 24 }}>
             <Alert
               message="CometAPI is the primary provider"
               description="All text, image, video, and voice operations go through CometAPI. GigaChat is used for presentation generation. OpenAI is a fallback option."
@@ -389,10 +427,7 @@ function SettingsPage() {
                 label="CometAPI API Key (Primary)"
                 extra="Main provider for text/image/video/voice operations"
               >
-                <Input.Password 
-                  placeholder="sk-..." 
-                  autoComplete="off"
-                />
+                <Input.Password placeholder="sk-..." autoComplete="off" />
               </Form.Item>
               <Form.Item
                 name="gigachat_credentials"
@@ -400,14 +435,8 @@ function SettingsPage() {
                 extra="For presentation generation. Format: Base64(client_id:client_secret)"
               >
                 <Space.Compact style={{ width: '100%' }}>
-                  <Input.Password 
-                    placeholder="Base64 encoded credentials" 
-                    autoComplete="off"
-                    style={{ flex: 1 }}
-                  />
-                  <Button onClick={() => setGigachatModalOpen(true)}>
-                    Convert
-                  </Button>
+                  <Input.Password placeholder="Base64 encoded credentials" autoComplete="off" style={{ flex: 1 }} />
+                  <Button onClick={() => setGigachatModalOpen(true)}>Convert</Button>
                 </Space.Compact>
               </Form.Item>
               <Divider />
@@ -416,110 +445,50 @@ function SettingsPage() {
                 label="OpenAI API Key (Fallback)"
                 extra="Used when CometAPI is not configured"
               >
-                <Input.Password 
-                  placeholder="sk-..." 
-                  autoComplete="off"
-                />
+                <Input.Password placeholder="sk-..." autoComplete="off" />
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Update API Keys
                 </Button>
               </Form.Item>
-              <Text type="warning">
-                ⚠️ Server restart required after updating API keys
-              </Text>
+              <Text type="warning">⚠️ Server restart required after updating API keys</Text>
             </Form>
           </Card>
 
           {/* Model Configuration */}
           <Card title="🎯 AI Models Configuration" style={{ marginBottom: 24 }}>
-            <Alert
-              message="Configurable Models"
-              description="These models are used via CometAPI. You can manually enter model names as they appear in CometAPI (e.g., qwen3-max-2026-01-23)."
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
             <Form form={apiForm} layout="vertical" onFinish={handleSaveApi}>
-              <Form.Item
-                name="default_text_model"
-                label="Text Generation Model"
-                rules={[{ required: true }]}
-                extra="Model for text/chat (e.g., qwen3-max-2026-01-23, gpt-4o)"
-              >
+              <Form.Item name="default_text_model" label="Text Generation Model" rules={[{ required: true }]} extra="e.g., qwen3-max-2026-01-23, gpt-4o">
                 <Input placeholder="qwen3-max-2026-01-23" />
               </Form.Item>
-              <Form.Item
-                name="default_image_model"
-                label="Image Generation Model"
-                rules={[{ required: true }]}
-                extra="Model for images (e.g., dall-e-3)"
-              >
+              <Form.Item name="default_image_model" label="Image Generation Model" rules={[{ required: true }]} extra="e.g., dall-e-3">
                 <Input placeholder="dall-e-3" />
               </Form.Item>
-              <Form.Item
-                name="default_video_model"
-                label="Video Generation Model"
-                rules={[{ required: true }]}
-                extra="Model for videos (e.g., sora-2, sora-2-pro)"
-              >
+              <Form.Item name="default_video_model" label="Video Generation Model" rules={[{ required: true }]} extra="e.g., sora-2, sora-2-pro">
                 <Input placeholder="sora-2" />
               </Form.Item>
-              <Form.Item
-                name="default_voice_model"
-                label="Speech Recognition Model"
-                rules={[{ required: true }]}
-                extra="Model for voice (e.g., whisper-1)"
-              >
+              <Form.Item name="default_voice_model" label="Speech Recognition Model" rules={[{ required: true }]} extra="e.g., whisper-1">
                 <Input placeholder="whisper-1" />
               </Form.Item>
-              <Form.Item
-                name="default_gigachat_model"
-                label="GigaChat Model (Presentations)"
-                rules={[{ required: true }]}
-                extra="GigaChat model for presentations (e.g., GigaChat-2-Max)"
-              >
+              <Form.Item name="default_gigachat_model" label="GigaChat Model (Presentations)" rules={[{ required: true }]} extra="e.g., GigaChat-2-Max">
                 <Input placeholder="GigaChat-2-Max" />
               </Form.Item>
               <Divider orientation="left">Base URLs</Divider>
-              <Form.Item
-                name="cometapi_base_url"
-                label="CometAPI Base URL"
-                extra="Leave empty for default (https://api.cometapi.com/v1)"
-              >
+              <Form.Item name="cometapi_base_url" label="CometAPI Base URL" extra="Default: https://api.cometapi.com/v1">
                 <Input placeholder="https://api.cometapi.com/v1" />
               </Form.Item>
-              <Form.Item
-                name="gigachat_base_url"
-                label="GigaChat Base URL"
-                extra="Leave empty for default (https://gigachat.devices.sberbank.ru/api/v1)"
-              >
+              <Form.Item name="gigachat_base_url" label="GigaChat Base URL" extra="Default: https://gigachat.devices.sberbank.ru/api/v1">
                 <Input placeholder="https://gigachat.devices.sberbank.ru/api/v1" />
               </Form.Item>
               <Divider />
-              <Form.Item
-                name="max_context_messages"
-                label="Max Context Messages"
-                rules={[{ required: true }]}
-                extra="Number of messages to keep in conversation context"
-              >
+              <Form.Item name="max_context_messages" label="Max Context Messages" rules={[{ required: true }]}>
                 <InputNumber min={1} max={100} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item
-                name="context_ttl_seconds"
-                label="Context TTL (seconds)"
-                rules={[{ required: true }]}
-                extra="How long to keep conversation context"
-              >
+              <Form.Item name="context_ttl_seconds" label="Context TTL (seconds)" rules={[{ required: true }]}>
                 <InputNumber min={60} style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item
-                name="openai_timeout"
-                label="API Timeout (seconds)"
-                rules={[{ required: true }]}
-                extra="Timeout for API requests"
-              >
+              <Form.Item name="openai_timeout" label="API Timeout (seconds)" rules={[{ required: true }]}>
                 <InputNumber min={30} max={600} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item>
@@ -531,23 +500,23 @@ function SettingsPage() {
           </Card>
 
           {/* Info Card */}
-          <Card title="ℹ️ Provider Information" style={{ marginTop: 24 }}>
+          <Card title="ℹ️ Provider Information">
             <Text type="secondary">
               <strong>CometAPI</strong> — unified gateway to 500+ AI models including:
               <ul style={{ marginLeft: 20, marginTop: 8 }}>
-                <li><strong>Qwen-3-Max</strong> — text generation (multilingual, context-aware)</li>
-                <li><strong>DALL-E 3</strong> — high-quality image generation</li>
+                <li><strong>Qwen-3-Max</strong> — text generation</li>
+                <li><strong>DALL-E 3</strong> — image generation</li>
                 <li><strong>Sora 2</strong> — video generation (4-12 seconds)</li>
-                <li><strong>Whisper</strong> — speech recognition (25+ languages)</li>
+                <li><strong>Whisper</strong> — speech recognition</li>
               </ul>
             </Text>
             <br />
             <Text type="secondary">
-              <strong>GigaChat</strong> — Sber's AI model:
+              <strong>GigaChat</strong> — Sber AI:
               <ul style={{ marginLeft: 20, marginTop: 8 }}>
                 <li>Excellent Russian language support</li>
-                <li>Presentation structure generation</li>
-                <li>Requires separate credentials from developers.sber.ru</li>
+                <li>Presentation generation</li>
+                <li>Requires credentials from developers.sber.ru</li>
               </ul>
             </Text>
           </Card>
@@ -565,24 +534,16 @@ function SettingsPage() {
       >
         <Alert
           message="GigaChat Credentials Converter"
-          description="Enter your GigaChat client_id and client_secret from developers.sber.ru. They will be automatically converted to Base64 format."
+          description="Enter your GigaChat client_id and client_secret from developers.sber.ru."
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
         />
         <Form form={gigachatConvertForm} layout="vertical" onFinish={handleConvertGigachat}>
-          <Form.Item
-            name="client_id"
-            label="Client ID"
-            rules={[{ required: true, message: 'Please enter Client ID' }]}
-          >
+          <Form.Item name="client_id" label="Client ID" rules={[{ required: true, message: 'Please enter Client ID' }]}>
             <Input placeholder="Your GigaChat Client ID" />
           </Form.Item>
-          <Form.Item
-            name="client_secret"
-            label="Client Secret"
-            rules={[{ required: true, message: 'Please enter Client Secret' }]}
-          >
+          <Form.Item name="client_secret" label="Client Secret" rules={[{ required: true, message: 'Please enter Client Secret' }]}>
             <Input.Password placeholder="Your GigaChat Client Secret" />
           </Form.Item>
         </Form>

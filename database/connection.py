@@ -62,11 +62,55 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+async def sync_enums() -> None:
+    """
+    Sync PostgreSQL enum types with Python enum definitions.
+    Adds any missing values to existing enum types.
+    This handles the case where Python enums were extended
+    but no DB migration was run.
+    """
+    from sqlalchemy import text
+    
+    # Map of PostgreSQL enum type name -> list of required values
+    enum_sync_map = {
+        'requesttype': [
+            'text', 'image', 'video', 'voice', 'document',
+            'presentation', 'video_animate', 'long_video',
+        ],
+    }
+    
+    async with engine.begin() as conn:
+        for type_name, required_values in enum_sync_map.items():
+            # Check if enum type exists
+            result = await conn.execute(text(
+                "SELECT enumlabel FROM pg_enum "
+                "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                "WHERE pg_type.typname = :type_name "
+                "ORDER BY pg_enum.enumsortorder"
+            ), {"type_name": type_name})
+            current_values = {row[0] for row in result}
+            
+            if not current_values:
+                continue  # Enum doesn't exist yet, create_all will handle it
+            
+            for value in required_values:
+                if value not in current_values:
+                    await conn.execute(text(
+                        f"ALTER TYPE {type_name} ADD VALUE IF NOT EXISTS '{value}'"
+                    ))
+
+
 async def init_db() -> None:
     """
-    Initialize database - create all tables.
+    Initialize database - create all tables and sync enum types.
     Should be called on application startup.
     """
+    # Sync enum values before create_all (so new values are available)
+    try:
+        await sync_enums()
+    except Exception:
+        pass  # Enum type may not exist yet on first run
+    
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

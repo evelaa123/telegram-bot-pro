@@ -161,6 +161,84 @@ async def callback_image_edit(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "image:animate")
+async def callback_image_animate(callback: CallbackQuery):
+    """Handle animate photo (image-to-video) request."""
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    # Check if user is premium
+    from bot.services.subscription_service import subscription_service
+    is_premium = await subscription_service.check_premium(user.id)
+    
+    if not is_premium:
+        if language == "ru":
+            await callback.answer(
+                "💎 Оживление фото доступно только для премиум-подписчиков!",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                "💎 Animate photo is available for premium subscribers only!",
+                show_alert=True
+            )
+        return
+    
+    # Check limits for video_animate
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user.id, RequestType.VIDEO_ANIMATE
+    )
+    
+    if not has_limit:
+        if language == "ru":
+            await callback.answer(
+                f"⚠️ Лимит оживления фото исчерпан ({max_limit})",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                f"⚠️ Animate photo limit reached ({max_limit})",
+                show_alert=True
+            )
+        return
+    
+    # Get the photo from the message (callback.message should be a photo message)
+    if callback.message.photo:
+        photo = callback.message.photo[-1]
+        file_id = photo.file_id
+    else:
+        # Try to get from last_image_prompt state
+        file_id = None
+    
+    if not file_id:
+        # Save the message_id to retrieve photo later
+        if language == "ru":
+            await callback.answer("Не удалось найти фото для оживления", show_alert=True)
+        else:
+            await callback.answer("Could not find photo to animate", show_alert=True)
+        return
+    
+    # Store file_id and switch to animate prompt state
+    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}")
+    
+    if language == "ru":
+        await callback.message.answer(
+            "🎞 <b>Оживление фото</b>\n\n"
+            "Опишите, как должно двигаться/оживать изображение.\n\n"
+            "<i>Например: «Камера медленно приближается, волосы развеваются на ветру»</i>\n\n"
+            "Или отправьте пустое сообщение для автоматического оживления."
+        )
+    else:
+        await callback.message.answer(
+            "🎞 <b>Animate Photo</b>\n\n"
+            "Describe how the image should move/animate.\n\n"
+            "<i>Example: 'Camera slowly zooms in, hair blowing in the wind'</i>\n\n"
+            "Or send an empty message for automatic animation."
+        )
+    
+    await callback.answer()
+
+
 async def generate_image(
     message: Message,
     user_id: int,

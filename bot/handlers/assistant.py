@@ -550,18 +550,32 @@ async def process_alarm_time(message: Message, state: FSMContext):
     # Save alarm
     db_user = await user_service.get_or_create_user(user.id, user.username, user.first_name, user.last_name)
     
-    # Calculate next alarm time
-    now = datetime.now(timezone.utc)
-    alarm_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
-    if alarm_time <= now:
-        alarm_time += timedelta(days=1)
+    # Get user timezone from settings (e.g. "Europe/Moscow")
+    user_settings = db_user.settings or {}
+    user_tz_name = user_settings.get("timezone", "Europe/Moscow")
+    
+    try:
+        import zoneinfo
+        user_tz = zoneinfo.ZoneInfo(user_tz_name)
+    except Exception:
+        # Fallback to UTC if timezone is invalid
+        user_tz = timezone.utc
+    
+    # Calculate alarm time in user's timezone, then convert to UTC
+    now_user = datetime.now(user_tz)
+    alarm_time_user = now_user.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+    if alarm_time_user <= now_user:
+        alarm_time_user += timedelta(days=1)
+    
+    # Convert to UTC for storage
+    alarm_time_utc = alarm_time_user.astimezone(timezone.utc)
     
     async with async_session() as session:
         reminder = Reminder(
             user_id=db_user.id,
             type=ReminderType.ALARM,
             title=f"Будильник на {time_str}" if language == "ru" else f"Alarm at {time_str}",
-            remind_at=alarm_time,
+            remind_at=alarm_time_utc,
             recurrence="daily"  # Default to daily
         )
         session.add(reminder)
@@ -570,8 +584,8 @@ async def process_alarm_time(message: Message, state: FSMContext):
     await state.clear()
     
     if language == "ru":
-        text = f"✅ <b>Будильник установлен!</b>\n\nВремя: {time_str}\nПовтор: ежедневно"
+        text = f"✅ <b>Будильник установлен!</b>\n\nВремя: {time_str} ({user_tz_name})\nПовтор: ежедневно"
     else:
-        text = f"✅ <b>Alarm set!</b>\n\nTime: {time_str}\nRepeat: daily"
+        text = f"✅ <b>Alarm set!</b>\n\nTime: {time_str} ({user_tz_name})\nRepeat: daily"
     
     await message.answer(text, reply_markup=get_alarm_keyboard(language))

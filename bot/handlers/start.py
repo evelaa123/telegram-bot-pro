@@ -305,3 +305,19 @@ async def btn_support(message: Message):
     """Handle support button from Reply keyboard."""
     from bot.handlers.support import cmd_support
     await cmd_support(message)
+
+
+@router.message(F.text.in_({"💎 Подписка", "💎 Subscription"}))
+async def btn_subscription(message: Message):
+    """Handle subscription button from Reply keyboard."""
+    user = message.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    from bot.services.subscription_service import subscription_service
+    subscription_text = await subscription_service.get_subscription_text(user.id, language)
+    
+    from bot.keyboards.inline import get_subscription_keyboard
+    await message.answer(
+        subscription_text,
+        reply_markup=get_subscription_keyboard(language)
+    )

@@ -111,7 +111,10 @@ export const statsApi = {
   apiUsageAlerts: (dailyBudget?: number, monthlyBudget?: number) =>
     api.get('/stats/api-usage/alerts', { params: { daily_budget_usd: dailyBudget, monthly_budget_usd: monthlyBudget } }),
   apiUsageByUser: (userId: number, days?: number) =>
-    api.get(`/stats/api-usage/user/${userId}`, { params: { days } })
+    api.get(`/stats/api-usage/user/${userId}`, { params: { days } }),
+  // Subscriptions
+  subscriptionsMonthly: (year?: number, month?: number) =>
+    api.get('/stats/subscriptions/monthly', { params: { year, month } }),
 };
 
 export const settingsApi = {

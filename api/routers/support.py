@@ -318,3 +318,54 @@ async def get_unread_count(
         count = result.scalar() or 0
         
         return {"unread_count": count}
+
+
+@router.get("/photo/{file_id}")
+async def get_support_photo(
+    file_id: str,
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Proxy endpoint to download Telegram photos by file_id.
+    This solves the problem of expired Telegram file URLs in the support chat.
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    
+    try:
+        from aiogram import Bot
+        bot = Bot(token=settings.telegram_bot_token)
+        
+        # Get file info from Telegram
+        file = await bot.get_file(file_id)
+        # Download file data
+        file_data = await bot.download_file(file.file_path)
+        
+        await bot.session.close()
+        
+        # Read bytes from the file-like object
+        if hasattr(file_data, 'read'):
+            image_bytes = file_data.read()
+        else:
+            image_bytes = file_data
+        
+        # Determine content type from file path
+        content_type = "image/jpeg"
+        if file.file_path and file.file_path.endswith(".png"):
+            content_type = "image/png"
+        
+        return StreamingResponse(
+            io.BytesIO(image_bytes),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "Content-Disposition": f"inline; filename=photo.jpg"
+            }
+        )
+        
+    except Exception as e:
+        logger.error("Failed to fetch support photo", error=str(e), file_id=file_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Photo not found or expired: {str(e)}"
+        )

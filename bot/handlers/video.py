@@ -11,7 +11,7 @@ from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
 from bot.keyboards.inline import get_video_model_keyboard, get_video_duration_keyboard, get_subscription_keyboard
 from database.redis_client import redis_client
-from database.models import RequestType
+from database.models import RequestType, RequestStatus
 from config import settings
 import structlog
 
@@ -142,6 +142,76 @@ async def callback_video_duration(callback: CallbackQuery):
             "Now describe the video you want to create.\n\n"
             "<i>Example: 'A cat playing piano in a jazz club, noir style'</i>\n\n"
             "⚠️ Cannot create real people or copyrighted content"
+        )
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data == "video:long")
+async def callback_video_long(callback: CallbackQuery):
+    """Handle long video (premium) selection."""
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    # Check if user is premium
+    from bot.services.subscription_service import subscription_service
+    is_premium = await subscription_service.check_premium(user.id)
+    
+    if not is_premium:
+        if language == "ru":
+            await callback.answer(
+                "💎 Длинные видео доступны только для Premium подписчиков!",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                "💎 Long videos are available for Premium subscribers only!",
+                show_alert=True
+            )
+        return
+    
+    # Check limits for long video
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user.id, RequestType.LONG_VIDEO
+    )
+    
+    if not has_limit:
+        if language == "ru":
+            await callback.answer(
+                f"⚠️ Лимит длинных видео исчерпан ({max_limit})",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                f"⚠️ Long video limit reached ({max_limit})",
+                show_alert=True
+            )
+        return
+    
+    # Set state and ask for prompt
+    await redis_client.set_user_state(user.id, "long_video_prompt:sora-2")
+    
+    if language == "ru":
+        remaining = max_limit - current if max_limit != -1 else "∞"
+        await callback.message.edit_text(
+            "🎥 <b>Длинное видео (Premium)</b>\n\n"
+            f"Осталось: {remaining}\n\n"
+            "📐 3 клипа по 12 сек = ~36 секунд\n"
+            "🤖 Модель: sora-2\n\n"
+            "Опишите сюжет для длинного видео.\n\n"
+            "<i>Например: «Космический корабль пролетает через пояс астероидов и "
+            "приближается к планете с кольцами»</i>"
+        )
+    else:
+        remaining = max_limit - current if max_limit != -1 else "∞"
+        await callback.message.edit_text(
+            "🎥 <b>Long Video (Premium)</b>\n\n"
+            f"Remaining: {remaining}\n\n"
+            "📐 3 clips x 12 sec = ~36 seconds\n"
+            "🤖 Model: sora-2\n\n"
+            "Describe the plot for a long video.\n\n"
+            "<i>Example: 'A spaceship flying through an asteroid belt and "
+            "approaching a ringed planet'</i>"
         )
     
     await callback.answer()
@@ -413,4 +483,173 @@ async def queue_video_remix(
         user_id=user_id,
         task_id=task_id,
         original_video_id=video_id
+    )
+
+
+async def queue_animate_photo(
+    message: Message,
+    user_id: int,
+    photo_file_id: str,
+    prompt: str
+):
+    """
+    Queue image-to-video (animate photo) task.
+    Premium only feature.
+    """
+    language = await user_service.get_user_language(user_id)
+    
+    # Check limits for video_animate
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user_id, RequestType.VIDEO_ANIMATE
+    )
+    
+    if not has_limit:
+        if language == "ru":
+            await message.answer(
+                f"⚠️ Лимит оживления фото исчерпан ({max_limit}).\n\n"
+                "💎 Лимит обновится завтра.",
+                reply_markup=get_subscription_keyboard(language)
+            )
+        else:
+            await message.answer(
+                f"⚠️ Animate photo limit reached ({max_limit}).\n\n"
+                "💎 Limit resets tomorrow.",
+                reply_markup=get_subscription_keyboard(language)
+            )
+        return
+    
+    # Queue the task
+    try:
+        from worker.tasks import queue_video_task
+        
+        task_id = await queue_video_task(
+            user_id=user_id,
+            chat_id=message.chat.id,
+            prompt=prompt,
+            model="sora-2",
+            duration=4,
+            reference_image_file_id=photo_file_id
+        )
+    except Exception as e:
+        logger.error(f"Failed to queue animate photo task: {e}")
+        task_id = "pending"
+    
+    # Clear user state
+    await redis_client.clear_user_state(user_id)
+    
+    if language == "ru":
+        await message.answer(
+            "🎞 <b>Оживление фото в очереди!</b>\n\n"
+            f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n\n"
+            "⏳ Примерное время: 1-3 минуты\n\n"
+            "Я отправлю готовое видео, когда оно будет готово."
+        )
+    else:
+        await message.answer(
+            "🎞 <b>Photo animation queued!</b>\n\n"
+            f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n\n"
+            "⏳ Estimated time: 1-3 minutes\n\n"
+            "I'll send you the video when it's ready."
+        )
+    
+    logger.info(
+        "Animate photo queued",
+        user_id=user_id,
+        task_id=task_id,
+        photo_file_id=photo_file_id
+    )
+
+
+async def queue_long_video_generation(
+    message: Message,
+    user_id: int,
+    prompt: str,
+    model: str = "sora-2"
+):
+    """
+    Queue long video generation (stitching multiple clips).
+    Premium only feature.
+    """
+    language = await user_service.get_user_language(user_id)
+    
+    # Check premium
+    from bot.services.subscription_service import subscription_service
+    is_premium = await subscription_service.check_premium(user_id)
+    
+    if not is_premium:
+        if language == "ru":
+            await message.answer(
+                "💎 Генерация длинных видео доступна только для премиум-подписчиков!",
+                reply_markup=get_subscription_keyboard(language)
+            )
+        else:
+            await message.answer(
+                "💎 Long video generation is available for premium subscribers only!",
+                reply_markup=get_subscription_keyboard(language)
+            )
+        return
+    
+    # Check limits
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user_id, RequestType.LONG_VIDEO
+    )
+    
+    if not has_limit:
+        if language == "ru":
+            await message.answer(
+                f"⚠️ Лимит длинных видео исчерпан ({max_limit}).\n\n"
+                "💎 Лимит обновится завтра.",
+                reply_markup=get_subscription_keyboard(language)
+            )
+        else:
+            await message.answer(
+                f"⚠️ Long video limit reached ({max_limit}).\n\n"
+                "💎 Limit resets tomorrow.",
+                reply_markup=get_subscription_keyboard(language)
+            )
+        return
+    
+    # Queue multiple video tasks (3 clips of 12 sec = 36 sec total)
+    try:
+        from worker.tasks import queue_long_video_task
+        
+        task_id = await queue_long_video_task(
+            user_id=user_id,
+            chat_id=message.chat.id,
+            prompt=prompt,
+            model=model,
+            num_clips=3,
+            clip_duration=12
+        )
+    except Exception as e:
+        logger.error(f"Failed to queue long video task: {e}")
+        task_id = "pending"
+    
+    # Clear user state
+    await redis_client.clear_user_state(user_id)
+    
+    if language == "ru":
+        await message.answer(
+            "🎥 <b>Длинное видео в очереди!</b>\n\n"
+            f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
+            f"🤖 Модель: {model}\n"
+            "📐 3 клипа по 12 сек = ~36 секунд\n\n"
+            "⏳ Примерное время: 5-15 минут\n\n"
+            "Я отправлю готовое видео, когда оно будет готово."
+        )
+    else:
+        await message.answer(
+            "🎥 <b>Long video queued!</b>\n\n"
+            f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
+            f"🤖 Model: {model}\n"
+            "📐 3 clips x 12 sec = ~36 seconds\n\n"
+            "⏳ Estimated time: 5-15 minutes\n\n"
+            "I'll send you the video when it's ready."
+        )
+    
+    logger.info(
+        "Long video queued",
+        user_id=user_id,
+        task_id=task_id,
+        model=model
     )

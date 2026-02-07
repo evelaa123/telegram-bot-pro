@@ -8,6 +8,7 @@ import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 import ApiUsagePage from './pages/ApiUsagePage';
 import SupportPage from './pages/SupportPage';
+import SubscriptionsPage from './pages/SubscriptionsPage';
 import AdminLayout from './components/AdminLayout';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -34,6 +35,7 @@ function App() {
         <Route path="support" element={<SupportPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="api-usage" element={<ApiUsagePage />} />
+        <Route path="subscriptions" element={<SubscriptionsPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
       

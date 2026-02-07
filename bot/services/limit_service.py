@@ -27,12 +27,15 @@ class LimitService:
         RequestType.VIDEO: "video_count",
         RequestType.VOICE: "voice_count",
         RequestType.DOCUMENT: "document_count",
-        RequestType.PRESENTATION: "presentation_count"
+        RequestType.PRESENTATION: "presentation_count",
+        RequestType.VIDEO_ANIMATE: "video_animate_count",
+        RequestType.LONG_VIDEO: "long_video_count",
     }
     
     async def get_user_limits(self, telegram_id: int) -> Dict[str, int]:
         """
         Get user's rate limits (custom or global defaults).
+        For premium users, use premium limits from DB settings.
         
         Args:
             telegram_id: Telegram user ID
@@ -42,17 +45,61 @@ class LimitService:
         """
         async with async_session_maker() as session:
             result = await session.execute(
-                select(User.custom_limits).where(User.telegram_id == telegram_id)
+                select(User).where(User.telegram_id == telegram_id)
             )
-            row = result.first()
+            user = result.scalar_one_or_none()
             
-            if row and row[0]:
-                # Merge custom limits with defaults
-                limits = settings.default_limits.copy()
-                limits.update(row[0])
-                return limits
+            base_limits = settings.default_limits.copy()
+            # Add new types with defaults
+            base_limits.setdefault("presentation", 3)
+            base_limits.setdefault("video_animate", 0)  # Free users: 0 (premium only)
+            base_limits.setdefault("long_video", 0)     # Free users: 0 (premium only)
             
-            return settings.default_limits.copy()
+            if user and user.is_premium:
+                # Use premium limits from DB settings or env
+                try:
+                    from api.routers.settings import get_setting
+                    db_limits = await get_setting("limits")
+                    base_limits = {
+                        "text": db_limits.get("premium_text", -1),
+                        "image": db_limits.get("premium_image", -1),
+                        "video": db_limits.get("premium_video", -1),
+                        "voice": db_limits.get("premium_voice", -1),
+                        "document": db_limits.get("premium_document", -1),
+                        "presentation": db_limits.get("premium_presentation", -1),
+                        "video_animate": db_limits.get("premium_video_animate", 10),
+                        "long_video": db_limits.get("premium_long_video", 3),
+                    }
+                except Exception:
+                    # Fallback: premium = unlimited
+                    base_limits = {
+                        "text": -1, "image": -1, "video": -1,
+                        "voice": -1, "document": -1, "presentation": -1,
+                        "video_animate": 10, "long_video": 3,
+                    }
+            else:
+                # Use free limits from DB settings
+                try:
+                    from api.routers.settings import get_setting
+                    db_limits = await get_setting("limits")
+                    base_limits = {
+                        "text": db_limits.get("text", base_limits["text"]),
+                        "image": db_limits.get("image", base_limits["image"]),
+                        "video": db_limits.get("video", base_limits["video"]),
+                        "voice": db_limits.get("voice", base_limits["voice"]),
+                        "document": db_limits.get("document", base_limits["document"]),
+                        "presentation": db_limits.get("presentation", base_limits.get("presentation", 3)),
+                        "video_animate": 0,
+                        "long_video": 0,
+                    }
+                except Exception:
+                    pass
+            
+            # Custom user overrides take priority
+            if user and user.custom_limits:
+                base_limits.update(user.custom_limits)
+            
+            return base_limits
     
     async def get_today_usage(self, telegram_id: int) -> Dict[str, int]:
         """
@@ -70,12 +117,9 @@ class LimitService:
             
             if not user_row:
                 return {
-                    "text": 0,
-                    "image": 0,
-                    "video": 0,
-                    "voice": 0,
-                    "document": 0,
-                    "presentation": 0
+                    "text": 0, "image": 0, "video": 0,
+                    "voice": 0, "document": 0, "presentation": 0,
+                    "video_animate": 0, "long_video": 0,
                 }
             
             user_id = user_row[0]
@@ -92,12 +136,9 @@ class LimitService:
             
             if not daily_limit:
                 return {
-                    "text": 0,
-                    "image": 0,
-                    "video": 0,
-                    "voice": 0,
-                    "document": 0,
-                    "presentation": 0
+                    "text": 0, "image": 0, "video": 0,
+                    "voice": 0, "document": 0, "presentation": 0,
+                    "video_animate": 0, "long_video": 0,
                 }
             
             return {
@@ -106,7 +147,9 @@ class LimitService:
                 "video": daily_limit.video_count,
                 "voice": daily_limit.voice_count,
                 "document": daily_limit.document_count,
-                "presentation": getattr(daily_limit, 'presentation_count', 0)
+                "presentation": getattr(daily_limit, 'presentation_count', 0),
+                "video_animate": getattr(daily_limit, 'video_animate_count', 0),
+                "long_video": getattr(daily_limit, 'long_video_count', 0),
             }
     
     async def get_remaining_limits(
@@ -208,7 +251,9 @@ class LimitService:
                 video_count=1 if request_type == RequestType.VIDEO else 0,
                 voice_count=1 if request_type == RequestType.VOICE else 0,
                 document_count=1 if request_type == RequestType.DOCUMENT else 0,
-                presentation_count=1 if request_type == RequestType.PRESENTATION else 0
+                presentation_count=1 if request_type == RequestType.PRESENTATION else 0,
+                video_animate_count=1 if request_type == RequestType.VIDEO_ANIMATE else 0,
+                long_video_count=1 if request_type == RequestType.LONG_VIDEO else 0,
             )
             
             # On conflict, increment the specific counter
@@ -319,9 +364,18 @@ class LimitService:
                 f"🎬 Видео: {format_limit(remaining['video'], limits['video'], 'ru')}\n"
                 f"🎤 Голосовые: {format_limit(remaining['voice'], limits['voice'], 'ru')}\n"
                 f"📊 Презентации: {format_limit(remaining.get('presentation', 0), limits.get('presentation', 3), 'ru')}\n"
-                f"📄 Документы: {format_limit(remaining['document'], limits['document'], 'ru')}\n\n"
-                f"🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м\n\n"
-                "💳 Оформите подписку для безлимитного доступа!"
+                f"📄 Документы: {format_limit(remaining['document'], limits['document'], 'ru')}\n"
+            )
+            # Show premium features if user has them
+            va_lim = limits.get('video_animate', 0)
+            lv_lim = limits.get('long_video', 0)
+            if va_lim != 0:
+                text += f"🎞 Оживление фото: {format_limit(remaining.get('video_animate', 0), va_lim, 'ru')}\n"
+            if lv_lim != 0:
+                text += f"🎥 Длинное видео: {format_limit(remaining.get('long_video', 0), lv_lim, 'ru')}\n"
+            text += (
+                f"\n🔄 Обновление лимитов через: {hours_left}ч {minutes_left}м\n\n"
+                "💳 Оформите подписку для увеличения лимитов!"
             )
         else:
             text = (
@@ -331,9 +385,17 @@ class LimitService:
                 f"🎬 Videos: {format_limit(remaining['video'], limits['video'], 'en')}\n"
                 f"🎤 Voice: {format_limit(remaining['voice'], limits['voice'], 'en')}\n"
                 f"📊 Presentations: {format_limit(remaining.get('presentation', 0), limits.get('presentation', 3), 'en')}\n"
-                f"📄 Documents: {format_limit(remaining['document'], limits['document'], 'en')}\n\n"
-                f"🔄 Limits reset in: {hours_left}h {minutes_left}m\n\n"
-                "💳 Get subscription for unlimited access!"
+                f"📄 Documents: {format_limit(remaining['document'], limits['document'], 'en')}\n"
+            )
+            va_lim = limits.get('video_animate', 0)
+            lv_lim = limits.get('long_video', 0)
+            if va_lim != 0:
+                text += f"🎞 Animate Photo: {format_limit(remaining.get('video_animate', 0), va_lim, 'en')}\n"
+            if lv_lim != 0:
+                text += f"🎥 Long Video: {format_limit(remaining.get('long_video', 0), lv_lim, 'en')}\n"
+            text += (
+                f"\n🔄 Limits reset in: {hours_left}h {minutes_left}m\n\n"
+                "💳 Get subscription for more limits!"
             )
         
         return text
@@ -369,7 +431,9 @@ class LimitService:
                     video_count=0,
                     voice_count=0,
                     document_count=0,
-                    presentation_count=0
+                    presentation_count=0,
+                    video_animate_count=0,
+                    long_video_count=0,
                 )
             )
             await session.commit()

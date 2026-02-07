@@ -30,6 +30,16 @@ DEFAULT_SETTINGS = {
         "video": app_settings.default_video_limit,
         "voice": app_settings.default_voice_limit,
         "document": app_settings.default_document_limit,
+        "presentation": app_settings.default_presentation_limit,
+        # Premium limits (-1 = unlimited)
+        "premium_text": -1,
+        "premium_image": -1,
+        "premium_video": -1,
+        "premium_voice": -1,
+        "premium_document": -1,
+        "premium_presentation": -1,
+        "premium_video_animate": 10,
+        "premium_long_video": 3,
     },
     "bot": {
         "is_enabled": True,

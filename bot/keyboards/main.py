@@ -24,6 +24,7 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
             "presentation": "📊 Презентация",
             "assistant": "🗓 Ассистент",
             "settings": "⚙️ Настройки",
+            "subscription": "💎 Подписка",
             "limits": "📊 Лимиты",
             "support": "📨 Поддержка",
             "new_dialog": "🔄 Новый диалог"
@@ -36,6 +37,7 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
             "presentation": "📊 Presentation",
             "assistant": "🗓 Assistant",
             "settings": "⚙️ Settings",
+            "subscription": "💎 Subscription",
             "limits": "📊 Limits",
             "support": "📨 Support",
             "new_dialog": "🔄 New Dialog"
@@ -58,16 +60,19 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
     builder.add(KeyboardButton(text=t["presentation"]))
     builder.add(KeyboardButton(text=t["assistant"]))
     
-    # Row 4: Settings, Support
+    # Row 4: Settings, Subscription
     builder.add(KeyboardButton(text=t["settings"]))
+    builder.add(KeyboardButton(text=t["subscription"]))
+    
+    # Row 5: Limits, Support
+    builder.add(KeyboardButton(text=t["limits"]))
     builder.add(KeyboardButton(text=t["support"]))
     
-    # Row 5: Limits, New Dialog
-    builder.add(KeyboardButton(text=t["limits"]))
+    # Row 6: New Dialog
     builder.add(KeyboardButton(text=t["new_dialog"]))
     
-    # Adjust layout: 2-2-2-2-2
-    builder.adjust(2, 2, 2, 2, 2)
+    # Adjust layout: 2-2-2-2-2-1
+    builder.adjust(2, 2, 2, 2, 2, 1)
     
     return builder.as_markup(resize_keyboard=True)
 

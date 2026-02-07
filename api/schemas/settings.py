@@ -6,11 +6,23 @@ from pydantic import BaseModel, Field
 
 class GlobalLimits(BaseModel):
     """Global limits configuration."""
-    text: int = Field(10, ge=0)
-    image: int = Field(5, ge=0)
-    video: int = Field(5, ge=0)
-    voice: int = Field(5, ge=0)
-    document: int = Field(10, ge=0)
+    text: int = Field(10, ge=-1)
+    image: int = Field(5, ge=-1)
+    video: int = Field(5, ge=-1)
+    voice: int = Field(5, ge=-1)
+    document: int = Field(10, ge=-1)
+    presentation: int = Field(3, ge=-1)
+    # Premium subscriber limits (-1 = unlimited)
+    premium_text: int = Field(-1, ge=-1)
+    premium_image: int = Field(-1, ge=-1)
+    premium_video: int = Field(-1, ge=-1)
+    premium_voice: int = Field(-1, ge=-1)
+    premium_document: int = Field(-1, ge=-1)
+    premium_presentation: int = Field(-1, ge=-1)
+    # Video from photo (animate) - premium only
+    premium_video_animate: int = Field(10, ge=-1)
+    # Long video (stitching) - premium only
+    premium_long_video: int = Field(3, ge=-1)
 
 
 class BotSettings(BaseModel):

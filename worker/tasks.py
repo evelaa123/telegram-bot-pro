@@ -538,6 +538,399 @@ async def process_video_remix(
 
 
 # ============================================
+# Long Video (stitching clips)
+# ============================================
+
+async def queue_long_video_task(
+    user_id: int,
+    chat_id: int,
+    prompt: str,
+    model: str = "sora-2",
+    num_clips: int = 3,
+    clip_duration: int = 12
+) -> int:
+    """
+    Queue a long video generation task (stitch multiple clips).
+    Premium only.
+    
+    Returns:
+        Task ID in database
+    """
+    user = await user_service.get_user_by_telegram_id(user_id)
+    if not user:
+        raise ValueError("User not found")
+    
+    # Create parent task record in database
+    async with async_session_maker() as session:
+        task = VideoTask(
+            user_id=user.id,
+            prompt=f"LONG_VIDEO({num_clips}x{clip_duration}s): {prompt}",
+            model=model,
+            status=VideoTaskStatus.QUEUED,
+            chat_id=chat_id,
+            duration_seconds=num_clips * clip_duration
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+    
+    # Queue the arq job
+    pool = await get_arq_pool()
+    await pool.enqueue_job(
+        'process_long_video',
+        task_id=task_id,
+        prompt=prompt,
+        model=model,
+        num_clips=num_clips,
+        clip_duration=clip_duration
+    )
+    await pool.close()
+    
+    logger.info(
+        "Long video task queued",
+        task_id=task_id,
+        user_id=user_id,
+        model=model,
+        num_clips=num_clips,
+        clip_duration=clip_duration
+    )
+    
+    return task_id
+
+
+async def process_long_video(
+    ctx,
+    task_id: int,
+    prompt: str,
+    model: str = "sora-2",
+    num_clips: int = 3,
+    clip_duration: int = 12
+):
+    """
+    Process long video generation by creating multiple clips and stitching them.
+    Each clip gets a continuation prompt so the narrative flows.
+    """
+    logger.info("Processing long video", task_id=task_id, num_clips=num_clips)
+    
+    # Get task info
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(VideoTask).where(VideoTask.id == task_id)
+        )
+        task = result.scalar_one_or_none()
+        
+        if not task:
+            logger.error("Task not found", task_id=task_id)
+            return
+        
+        user = await user_service.get_user_by_id(task.user_id)
+        if not user:
+            logger.error("User not found", user_id=task.user_id)
+            return
+        
+        telegram_id = user.telegram_id
+        language = await user_service.get_user_language(telegram_id)
+    
+    from aiogram import Bot
+    from aiogram.types import BufferedInputFile
+    
+    bot = Bot(token=settings.telegram_bot_token)
+    
+    try:
+        # Update status to in_progress
+        async with async_session_maker() as session:
+            await session.execute(
+                update(VideoTask)
+                .where(VideoTask.id == task_id)
+                .values(
+                    status=VideoTaskStatus.IN_PROGRESS,
+                    started_at=datetime.utcnow()
+                )
+            )
+            await session.commit()
+        
+        # Send progress message
+        if language == "ru":
+            progress_msg = await bot.send_message(
+                chat_id=task.chat_id,
+                text=f"🎥 <b>Генерация длинного видео</b>\n\n"
+                     f"📐 {num_clips} клипов по {clip_duration} сек\n"
+                     f"⏳ Клип 1/{num_clips}...",
+                parse_mode="HTML"
+            )
+        else:
+            progress_msg = await bot.send_message(
+                chat_id=task.chat_id,
+                text=f"🎥 <b>Long Video Generation</b>\n\n"
+                     f"📐 {num_clips} clips x {clip_duration} sec\n"
+                     f"⏳ Clip 1/{num_clips}...",
+                parse_mode="HTML"
+            )
+        
+        # Generate clips sequentially with continuation prompts
+        clip_video_bytes = []
+        
+        for i in range(num_clips):
+            # Build continuation prompt
+            if i == 0:
+                clip_prompt = prompt
+            else:
+                clip_prompt = (
+                    f"Continue the video seamlessly from the previous scene. "
+                    f"Part {i+1}/{num_clips}: {prompt}"
+                )
+            
+            # Update progress
+            try:
+                if language == "ru":
+                    await bot.edit_message_text(
+                        chat_id=task.chat_id,
+                        message_id=progress_msg.message_id,
+                        text=f"🎥 <b>Генерация длинного видео</b>\n\n"
+                             f"📐 {num_clips} клипов по {clip_duration} сек\n"
+                             f"⏳ Клип {i+1}/{num_clips}...",
+                        parse_mode="HTML"
+                    )
+                else:
+                    await bot.edit_message_text(
+                        chat_id=task.chat_id,
+                        message_id=progress_msg.message_id,
+                        text=f"🎥 <b>Long Video Generation</b>\n\n"
+                             f"📐 {num_clips} clips x {clip_duration} sec\n"
+                             f"⏳ Clip {i+1}/{num_clips}...",
+                        parse_mode="HTML"
+                    )
+            except Exception:
+                pass
+            
+            # Create video clip
+            video_info = await ai_service.create_video(
+                prompt=clip_prompt,
+                model=model,
+                duration=clip_duration,
+                telegram_id=telegram_id
+            )
+            
+            video_id = video_info["video_id"]
+            
+            # Wait for completion
+            await ai_service.wait_for_video(
+                video_id=video_id,
+                poll_interval=settings.video_poll_interval
+            )
+            
+            # Download clip
+            video_bytes = await ai_service.download_video(video_id)
+            clip_video_bytes.append(video_bytes)
+            
+            # Update task progress
+            progress = int(((i + 1) / num_clips) * 100)
+            async with async_session_maker() as session:
+                await session.execute(
+                    update(VideoTask)
+                    .where(VideoTask.id == task_id)
+                    .values(progress=progress)
+                )
+                await session.commit()
+            
+            logger.info(f"Clip {i+1}/{num_clips} completed", task_id=task_id)
+        
+        # Try to concatenate clips with ffmpeg, fallback to sending individually
+        try:
+            import subprocess
+            import tempfile
+            import os
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Write clips to files
+                clip_paths = []
+                for idx, clip_bytes in enumerate(clip_video_bytes):
+                    clip_path = os.path.join(tmpdir, f"clip_{idx}.mp4")
+                    with open(clip_path, 'wb') as f:
+                        f.write(clip_bytes)
+                    clip_paths.append(clip_path)
+                
+                # Create concat file
+                concat_file = os.path.join(tmpdir, "concat.txt")
+                with open(concat_file, 'w') as f:
+                    for cp in clip_paths:
+                        f.write(f"file '{cp}'\n")
+                
+                # Concatenate with ffmpeg
+                output_path = os.path.join(tmpdir, "long_video.mp4")
+                result = subprocess.run(
+                    [
+                        'ffmpeg', '-f', 'concat', '-safe', '0',
+                        '-i', concat_file,
+                        '-c', 'copy',
+                        '-y', output_path
+                    ],
+                    capture_output=True, timeout=120
+                )
+                
+                if result.returncode == 0 and os.path.exists(output_path):
+                    with open(output_path, 'rb') as f:
+                        final_video = f.read()
+                    
+                    # Delete progress message
+                    try:
+                        await bot.delete_message(
+                            chat_id=task.chat_id,
+                            message_id=progress_msg.message_id
+                        )
+                    except Exception:
+                        pass
+                    
+                    # Send single concatenated video
+                    video_file = BufferedInputFile(
+                        final_video,
+                        filename=f"long_video_{task_id}.mp4"
+                    )
+                    
+                    prompt_preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
+                    if language == "ru":
+                        caption = (
+                            f"🎥 <b>Длинное видео готово!</b>\n\n"
+                            f"📝 {prompt_preview}\n"
+                            f"📐 {num_clips} клипов = ~{num_clips * clip_duration} сек"
+                        )
+                    else:
+                        caption = (
+                            f"🎥 <b>Long video ready!</b>\n\n"
+                            f"📝 {prompt_preview}\n"
+                            f"📐 {num_clips} clips = ~{num_clips * clip_duration} sec"
+                        )
+                    
+                    sent_message = await bot.send_video(
+                        chat_id=task.chat_id,
+                        video=video_file,
+                        caption=caption,
+                        parse_mode="HTML",
+                        supports_streaming=True
+                    )
+                    
+                    # Update task as completed
+                    async with async_session_maker() as session:
+                        await session.execute(
+                            update(VideoTask)
+                            .where(VideoTask.id == task_id)
+                            .values(
+                                status=VideoTaskStatus.COMPLETED,
+                                progress=100,
+                                completed_at=datetime.utcnow(),
+                                result_file_id=sent_message.video.file_id
+                            )
+                        )
+                        await session.commit()
+                else:
+                    raise Exception("ffmpeg concat failed")
+                
+        except Exception as concat_error:
+            logger.warning(f"ffmpeg concat failed, sending clips individually: {concat_error}")
+            
+            # Delete progress message
+            try:
+                await bot.delete_message(
+                    chat_id=task.chat_id,
+                    message_id=progress_msg.message_id
+                )
+            except Exception:
+                pass
+            
+            # Fallback: send clips individually
+            for idx, clip_bytes in enumerate(clip_video_bytes):
+                video_file = BufferedInputFile(
+                    clip_bytes,
+                    filename=f"clip_{idx+1}_{task_id}.mp4"
+                )
+                
+                if language == "ru":
+                    caption = f"🎥 Клип {idx+1}/{num_clips}"
+                else:
+                    caption = f"🎥 Clip {idx+1}/{num_clips}"
+                
+                await bot.send_video(
+                    chat_id=task.chat_id,
+                    video=video_file,
+                    caption=caption,
+                    parse_mode="HTML",
+                    supports_streaming=True
+                )
+            
+            # Update task as completed
+            async with async_session_maker() as session:
+                await session.execute(
+                    update(VideoTask)
+                    .where(VideoTask.id == task_id)
+                    .values(
+                        status=VideoTaskStatus.COMPLETED,
+                        progress=100,
+                        completed_at=datetime.utcnow()
+                    )
+                )
+                await session.commit()
+        
+        # Increment usage and record request
+        await limit_service.increment_usage(telegram_id, RequestType.LONG_VIDEO)
+        await limit_service.record_request(
+            telegram_id=telegram_id,
+            request_type=RequestType.LONG_VIDEO,
+            prompt=prompt[:500],
+            model=model,
+            status=RequestStatus.SUCCESS
+        )
+        
+        logger.info("Long video generation completed", task_id=task_id)
+        
+    except Exception as e:
+        logger.error("Long video generation failed", task_id=task_id, error=str(e))
+        
+        # Update task as failed
+        async with async_session_maker() as session:
+            await session.execute(
+                update(VideoTask)
+                .where(VideoTask.id == task_id)
+                .values(
+                    status=VideoTaskStatus.FAILED,
+                    error_message=str(e),
+                    completed_at=datetime.utcnow()
+                )
+            )
+            await session.commit()
+        
+        if language == "ru":
+            error_text = (
+                "❌ <b>Ошибка генерации длинного видео</b>\n\n"
+                "Лимит не списан. Попробуйте ещё раз."
+            )
+        else:
+            error_text = (
+                "❌ <b>Long Video Generation Error</b>\n\n"
+                "Limit not charged. Please try again."
+            )
+        
+        await bot.send_message(
+            chat_id=task.chat_id,
+            text=error_text,
+            parse_mode="HTML"
+        )
+        
+        # Record failed request
+        await limit_service.record_request(
+            telegram_id=telegram_id,
+            request_type=RequestType.LONG_VIDEO,
+            prompt=prompt[:500],
+            model=model,
+            status=RequestStatus.FAILED,
+            error_message=str(e)
+        )
+    
+    finally:
+        await bot.session.close()
+
+
+# ============================================
 # Reminder/Alarm Scheduler
 # ============================================
 
@@ -628,8 +1021,19 @@ async def check_reminders(ctx):
                 
                 # Update reminder status
                 if reminder.recurrence == "daily":
-                    # For daily alarms, reschedule for next day
-                    next_time = reminder.remind_at + timedelta(days=1)
+                    # For daily alarms, reschedule for next day in user's timezone
+                    user_tz_name = user.settings.get("timezone", "Europe/Moscow") if user.settings else "Europe/Moscow"
+                    try:
+                        import zoneinfo
+                        user_tz = zoneinfo.ZoneInfo(user_tz_name)
+                    except Exception:
+                        user_tz = timezone.utc
+                    
+                    # Convert current remind_at to user's TZ, add 1 day, convert back to UTC
+                    remind_in_user_tz = reminder.remind_at.astimezone(user_tz)
+                    next_time_user = remind_in_user_tz + timedelta(days=1)
+                    next_time = next_time_user.astimezone(timezone.utc)
+                    
                     await session.execute(
                         update(Reminder)
                         .where(Reminder.id == reminder.id)
@@ -668,6 +1072,7 @@ class WorkerSettings:
     functions = [
         process_video_generation,
         process_video_remix,
+        process_long_video,
         check_reminders
     ]
     

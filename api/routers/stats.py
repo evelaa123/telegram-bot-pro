@@ -16,7 +16,7 @@ from api.schemas.stats import (
 )
 from api.services.auth_service import get_current_admin
 from database import async_session_maker
-from database.models import User, Request, RequestType, VideoTask, VideoTaskStatus, Admin, APIUsageLog
+from database.models import User, Request, RequestType, VideoTask, VideoTaskStatus, Admin, APIUsageLog, Subscription
 from bot.services.usage_tracking_service import usage_tracking_service
 import structlog
 
@@ -469,3 +469,76 @@ async def get_api_usage_by_user(
     Get API usage for a specific user.
     """
     return await usage_tracking_service.get_usage_by_user(user_id, days)
+
+
+@router.get("/subscriptions/monthly")
+async def get_monthly_subscriptions(
+    year: int = Query(default=None, description="Year (default: current)"),
+    month: int = Query(default=None, ge=1, le=12, description="Month (default: current)"),
+    current_admin: Admin = Depends(get_current_admin)
+):
+    """
+    Get subscriptions purchased in a given month.
+    """
+    from datetime import timezone as tz
+    now = datetime.now(tz.utc)
+    target_year = year or now.year
+    target_month = month or now.month
+    
+    # Calculate month boundaries
+    month_start = datetime(target_year, target_month, 1, tzinfo=tz.utc)
+    if target_month == 12:
+        month_end = datetime(target_year + 1, 1, 1, tzinfo=tz.utc)
+    else:
+        month_end = datetime(target_year, target_month + 1, 1, tzinfo=tz.utc)
+    
+    async with async_session_maker() as session:
+        # Get subscriptions in the period
+        result = await session.execute(
+            select(Subscription, User)
+            .join(User, Subscription.user_id == User.id)
+            .where(and_(
+                Subscription.created_at >= month_start,
+                Subscription.created_at < month_end
+            ))
+            .order_by(Subscription.created_at.desc())
+        )
+        
+        subscriptions = []
+        total_revenue_rub = 0.0
+        
+        for sub, user in result:
+            total_revenue_rub += float(sub.amount_rub)
+            subscriptions.append({
+                "id": sub.id,
+                "user_id": sub.user_id,
+                "telegram_id": user.telegram_id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "payment_id": sub.payment_id,
+                "payment_provider": sub.payment_provider,
+                "amount_rub": float(sub.amount_rub),
+                "starts_at": sub.starts_at.isoformat() if sub.starts_at else None,
+                "expires_at": sub.expires_at.isoformat() if sub.expires_at else None,
+                "is_active": sub.is_active,
+                "created_at": sub.created_at.isoformat() if sub.created_at else None,
+            })
+        
+        # Count active premium users
+        active_premium_result = await session.execute(
+            select(func.count(User.id))
+            .where(and_(
+                User.subscription_type == "premium",
+                User.subscription_expires_at > now
+            ))
+        )
+        active_premium_count = active_premium_result.scalar() or 0
+        
+        return {
+            "year": target_year,
+            "month": target_month,
+            "total_subscriptions": len(subscriptions),
+            "total_revenue_rub": total_revenue_rub,
+            "active_premium_users": active_premium_count,
+            "subscriptions": subscriptions
+        }

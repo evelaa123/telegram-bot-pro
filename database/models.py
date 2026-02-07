@@ -25,6 +25,8 @@ class RequestType(enum.Enum):
     VOICE = "voice"
     DOCUMENT = "document"
     PRESENTATION = "presentation"
+    VIDEO_ANIMATE = "video_animate"
+    LONG_VIDEO = "long_video"
 
 
 class SubscriptionType(enum.Enum):
@@ -233,6 +235,8 @@ class DailyLimit(Base):
     voice_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     document_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     presentation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    video_animate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    long_video_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="daily_limits")

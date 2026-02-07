@@ -50,12 +50,14 @@ def get_image_actions_keyboard(
         "ru": {
             "regenerate": "🔄 Сгенерировать ещё",
             "edit": "✏️ Изменить промпт",
-            "variation": "🎨 Вариация"
+            "variation": "🎨 Вариация",
+            "animate": "🎞 Оживить фото"
         },
         "en": {
             "regenerate": "🔄 Generate Again",
             "edit": "✏️ Edit Prompt",
-            "variation": "🎨 Variation"
+            "variation": "🎨 Variation",
+            "animate": "🎞 Animate Photo"
         }
     }
     
@@ -78,6 +80,12 @@ def get_image_actions_keyboard(
             callback_data="image:variation"
         )
     )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["animate"],
+            callback_data="image:animate"
+        )
+    )
     
     return builder.as_markup()
 
@@ -93,11 +101,13 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
         "ru": {
             "sora2": "⚡ Быстрый (sora-2)",
             "sora2_pro": "🎬 Качество (sora-2-pro)",
+            "long_video": "🎥 Длинное видео (💎 Premium)",
             "cancel": "❌ Отмена"
         },
         "en": {
             "sora2": "⚡ Fast (sora-2)",
             "sora2_pro": "🎬 Quality (sora-2-pro)",
+            "long_video": "🎥 Long Video (💎 Premium)",
             "cancel": "❌ Cancel"
         }
     }
@@ -115,6 +125,12 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             text=t["sora2_pro"],
             callback_data="video:model:sora-2-pro"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["long_video"],
+            callback_data="video:long"
         )
     )
     builder.row(

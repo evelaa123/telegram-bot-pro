@@ -16,6 +16,28 @@ logger = structlog.get_logger()
 router = Router()
 
 
+@router.callback_query(F.data == "subscription:buy")
+async def callback_subscription_buy(callback: CallbackQuery):
+    """Handle subscription buy button from limit messages."""
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    subscription_text = await subscription_service.get_subscription_text(user.id, language)
+    
+    await callback.message.answer(subscription_text)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:close")
+async def callback_subscription_close(callback: CallbackQuery):
+    """Handle subscription close button."""
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
+
+
 @router.callback_query(F.data == "subscription:check")
 async def callback_subscription_check(callback: CallbackQuery, bot: Bot):
     """Handle subscription check button."""

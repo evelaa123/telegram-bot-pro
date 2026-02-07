@@ -1,0 +1,221 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+type Lang = 'ru' | 'en';
+
+// Translation dictionary
+const translations: Record<Lang, Record<string, string>> = {
+  ru: {
+    // Sidebar menu
+    'menu.dashboard': 'Dashboard',
+    'menu.users': 'Пользователи',
+    'menu.support': 'Поддержка',
+    'menu.tasks': 'Задачи',
+    'menu.api_usage': 'API Расходы',
+    'menu.subscriptions': 'Подписки',
+    'menu.settings': 'Настройки',
+    // Header
+    'header.title': 'AI Бот Админка',
+    'header.title_short': 'AI',
+    'header.profile': 'Профиль',
+    'header.logout': 'Выйти',
+    // Dashboard
+    'dash.title': 'Панель управления',
+    'dash.active_users_today': 'Активных пользователей сегодня',
+    'dash.requests_today': 'Запросов сегодня',
+    'dash.cost_today': 'Расходы сегодня',
+    'dash.queue_size': 'В очереди',
+    'dash.total_users': 'Всего пользователей',
+    'dash.total_requests': 'Всего запросов',
+    'dash.total_cost_30d': 'Расходы (30 дней)',
+    'dash.monthly_projection': 'Проекция на месяц',
+    'dash.avg_per_day': 'Средн.',
+    'dash.day': '/день',
+    'dash.requests_by_type': 'Запросы по типу (сегодня)',
+    'dash.top_users': 'Топ пользователей',
+    'dash.cost_by_type': 'Расходы по типу (30 дн.)',
+    'dash.cost_by_model': 'Расходы по модели (30 дн.)',
+    'dash.daily_costs_7d': 'Расходы по дням (7 дней)',
+    'dash.refresh': 'Обновить',
+    'dash.no_requests': 'Нет запросов сегодня',
+    'dash.no_cost_data': 'Нет данных о расходах',
+    // Table columns
+    'col.user': 'Пользователь',
+    'col.requests': 'Запросы',
+    'col.cost': 'Расход ($)',
+    'col.type': 'Тип',
+    'col.count': 'Количество',
+    'col.model': 'Модель',
+    'col.date': 'Дата',
+    'col.status': 'Статус',
+    'col.amount': 'Сумма (руб.)',
+    'col.provider': 'Провайдер',
+    'col.start': 'Начало',
+    'col.expires': 'Истекает',
+    'col.purchased': 'Куплено',
+    // Subscriptions
+    'subs.title': 'Подписки',
+    'subs.this_month': 'Подписок в этом месяце',
+    'subs.revenue': 'Доход в этом месяце (руб.)',
+    'subs.active_premium': 'Активных премиум',
+    'subs.history': 'История подписок',
+    'subs.no_data': 'Нет подписок за этот период',
+    'subs.active': 'Активна',
+    'subs.inactive': 'Неактивна',
+    // Settings
+    'settings.title': 'Настройки',
+    'settings.free_limits': 'Лимиты бесплатных (в день)',
+    'settings.premium_limits': 'Лимиты Premium подписчиков',
+    'settings.unlimited_hint': '-1 = безлимит',
+    'settings.save_limits': 'Сохранить все лимиты',
+    'settings.bot_settings': 'Настройки бота',
+    'settings.save_bot': 'Сохранить настройки бота',
+    'settings.api_keys': 'API ключи',
+    'settings.models_config': 'Конфигурация AI моделей',
+    'settings.provider_info': 'Информация о провайдерах',
+    'settings.provider_status': 'Статус провайдеров',
+    'settings.save_model': 'Сохранить настройки моделей и API',
+    'settings.update_keys': 'Обновить API ключи',
+    'settings.limits_saved': 'Лимиты сохранены',
+    'settings.bot_saved': 'Настройки бота сохранены',
+    'settings.api_saved': 'Настройки API сохранены',
+    'settings.error_save': 'Ошибка сохранения',
+    'settings.error_load': 'Ошибка загрузки настроек',
+    // Support
+    'support.title': 'Поддержка',
+    'support.select_conv': 'Выберите диалог',
+    'support.no_requests': 'Нет обращений',
+    'support.no_messages': 'Нет сообщений',
+    'support.type_reply': 'Введите ответ...',
+    'support.send': 'Отправить',
+    'support.sent': 'Сообщение отправлено',
+    'support.error_send': 'Ошибка отправки сообщения',
+    'support.new': 'новых',
+    // Common
+    'common.loading': 'Загрузка...',
+    'common.error': 'Ошибка загрузки данных',
+    'common.save': 'Сохранить',
+    'common.cancel': 'Отмена',
+    'common.refresh': 'Обновить',
+    'common.back': 'Назад',
+    'common.search': 'Поиск',
+  },
+  en: {
+    // Sidebar menu
+    'menu.dashboard': 'Dashboard',
+    'menu.users': 'Users',
+    'menu.support': 'Support',
+    'menu.tasks': 'Tasks',
+    'menu.api_usage': 'API Usage',
+    'menu.subscriptions': 'Subscriptions',
+    'menu.settings': 'Settings',
+    // Header
+    'header.title': 'AI Bot Admin',
+    'header.title_short': 'AI',
+    'header.profile': 'Profile',
+    'header.logout': 'Logout',
+    // Dashboard
+    'dash.title': 'Dashboard',
+    'dash.active_users_today': 'Active Users Today',
+    'dash.requests_today': 'Requests Today',
+    'dash.cost_today': 'Cost Today',
+    'dash.queue_size': 'Queue Size',
+    'dash.total_users': 'Total Users',
+    'dash.total_requests': 'Total Requests',
+    'dash.total_cost_30d': 'Total Cost (30d)',
+    'dash.monthly_projection': 'Monthly Projection',
+    'dash.avg_per_day': 'Avg:',
+    'dash.day': '/day',
+    'dash.requests_by_type': 'Requests by Type (Today)',
+    'dash.top_users': 'Top Users',
+    'dash.cost_by_type': 'Cost by Request Type (30 days)',
+    'dash.cost_by_model': 'Cost by Model (30 days)',
+    'dash.daily_costs_7d': 'Daily Costs (Last 7 Days)',
+    'dash.refresh': 'Refresh',
+    'dash.no_requests': 'No requests today',
+    'dash.no_cost_data': 'No cost data',
+    // Table columns
+    'col.user': 'User',
+    'col.requests': 'Requests',
+    'col.cost': 'Cost ($)',
+    'col.type': 'Type',
+    'col.count': 'Count',
+    'col.model': 'Model',
+    'col.date': 'Date',
+    'col.status': 'Status',
+    'col.amount': 'Amount (RUB)',
+    'col.provider': 'Provider',
+    'col.start': 'Start',
+    'col.expires': 'Expires',
+    'col.purchased': 'Purchased',
+    // Subscriptions
+    'subs.title': 'Subscriptions',
+    'subs.this_month': 'Subscriptions This Month',
+    'subs.revenue': 'Revenue This Month (RUB)',
+    'subs.active_premium': 'Active Premium Users',
+    'subs.history': 'Subscription History',
+    'subs.no_data': 'No subscriptions for this period',
+    'subs.active': 'Active',
+    'subs.inactive': 'Inactive',
+    // Settings
+    'settings.title': 'Settings',
+    'settings.free_limits': 'Free User Limits (per day)',
+    'settings.premium_limits': 'Premium User Limits',
+    'settings.unlimited_hint': '-1 = unlimited',
+    'settings.save_limits': 'Save All Limits',
+    'settings.bot_settings': 'Bot Settings',
+    'settings.save_bot': 'Save Bot Settings',
+    'settings.api_keys': 'API Keys',
+    'settings.models_config': 'AI Models Configuration',
+    'settings.provider_info': 'Provider Information',
+    'settings.provider_status': 'Provider Status',
+    'settings.save_model': 'Save Model & API Settings',
+    'settings.update_keys': 'Update API Keys',
+    'settings.limits_saved': 'Limits saved',
+    'settings.bot_saved': 'Bot settings saved',
+    'settings.api_saved': 'API settings saved',
+    'settings.error_save': 'Failed to save',
+    'settings.error_load': 'Failed to load settings',
+    // Support
+    'support.title': 'Support',
+    'support.select_conv': 'Select a conversation to start',
+    'support.no_requests': 'No support requests',
+    'support.no_messages': 'No messages yet',
+    'support.type_reply': 'Type your reply...',
+    'support.send': 'Send',
+    'support.sent': 'Message sent',
+    'support.error_send': 'Failed to send message',
+    'support.new': 'new',
+    // Common
+    'common.loading': 'Loading...',
+    'common.error': 'Failed to load data',
+    'common.save': 'Save',
+    'common.cancel': 'Cancel',
+    'common.refresh': 'Refresh',
+    'common.back': 'Back',
+    'common.search': 'Search',
+  },
+};
+
+interface LangState {
+  lang: Lang;
+  setLang: (lang: Lang) => void;
+  t: (key: string) => string;
+}
+
+export const useLangStore = create<LangState>()(
+  persist(
+    (set, get) => ({
+      lang: 'en',
+      setLang: (lang: Lang) => set({ lang }),
+      t: (key: string) => {
+        const { lang } = get();
+        return translations[lang]?.[key] || translations['en']?.[key] || key;
+      },
+    }),
+    {
+      name: 'lang-storage',
+      partialize: (state) => ({ lang: state.lang }),
+    }
+  )
+);

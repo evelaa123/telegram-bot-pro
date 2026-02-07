@@ -87,6 +87,7 @@ async def handle_text_message(message: Message):
         "📊 Презентация", "📊 Presentation",
         "🗓 Ассистент", "🗓 Assistant",
         "📨 Поддержка", "📨 Support",  # Support button
+        "💎 Подписка", "💎 Subscription",  # Subscription button
     }
     
     if text in menu_buttons:
@@ -123,6 +124,22 @@ async def handle_text_message(message: Message):
             size = state.split(":")[1]
             from bot.handlers.image import generate_image
             await generate_image(message, user.id, text, size)
+            return
+        
+        # Обработка оживления фото (image-to-video)
+        elif state.startswith("animate_photo:"):
+            file_id = state.split(":", 1)[1]
+            from bot.handlers.video import queue_animate_photo
+            prompt = text if text.strip() else "Animate this photo with gentle natural motion"
+            await queue_animate_photo(message, user.id, file_id, prompt)
+            return
+        
+        # Обработка промпта для длинного видео
+        elif state.startswith("long_video_prompt:"):
+            parts = state.split(":")
+            model = parts[1] if len(parts) > 1 else "sora-2"
+            from bot.handlers.video import queue_long_video_generation
+            await queue_long_video_generation(message, user.id, text, model)
             return
         
         # Обработка вопроса по документу
