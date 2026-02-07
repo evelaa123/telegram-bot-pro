@@ -16,6 +16,8 @@ import {
   Input,
   Spin,
   Alert,
+  Select,
+  Divider,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -71,8 +73,10 @@ function UserDetailPage() {
   const [requests, setRequests] = useState<UserRequest[]>([]);
   const [limitsModalOpen, setLimitsModalOpen] = useState(false);
   const [messageModalOpen, setMessageModalOpen] = useState(false);
+  const [premiumModalOpen, setPremiumModalOpen] = useState(false);
   const [limitsForm] = Form.useForm();
   const [messageForm] = Form.useForm();
+  const [premiumForm] = Form.useForm();
 
   useEffect(() => {
     if (telegramId) {
@@ -155,6 +159,28 @@ function UserDetailPage() {
     }
   };
 
+  const handleGrantPremium = async (values: { months: number }) => {
+    try {
+      await usersApi.grantPremium(Number(telegramId), values.months);
+      message.success(`Premium granted for ${values.months} month(s)`);
+      setPremiumModalOpen(false);
+      premiumForm.resetFields();
+      fetchUser();
+    } catch {
+      message.error('Failed to grant premium');
+    }
+  };
+
+  const handleRevokePremium = async () => {
+    try {
+      await usersApi.revokePremium(Number(telegramId));
+      message.success('Premium revoked');
+      fetchUser();
+    } catch {
+      message.error('Failed to revoke premium');
+    }
+  };
+
   const requestColumns = [
     {
       title: 'Time',
@@ -231,7 +257,22 @@ function UserDetailPage() {
           <Title level={4} style={{ margin: 0 }}>
             User: {user.username ? `@${user.username}` : user.telegram_id}
           </Title>
-          <Space>
+          <Space wrap>
+            <Button
+              icon={<CrownOutlined />}
+              type={user.has_active_subscription ? 'default' : 'primary'}
+              style={
+                !user.has_active_subscription
+                  ? { backgroundColor: '#faad14', borderColor: '#faad14' }
+                  : {}
+              }
+              onClick={() => {
+                premiumForm.setFieldsValue({ months: 1 });
+                setPremiumModalOpen(true);
+              }}
+            >
+              {user.has_active_subscription ? 'Manage Premium' : 'Grant Premium'}
+            </Button>
             <Button
               icon={<SettingOutlined />}
               onClick={() => {
@@ -313,7 +354,7 @@ function UserDetailPage() {
               <Space wrap>
                 {Object.entries(user.custom_limits).map(([key, value]) => (
                   <Tag key={key} color="blue">
-                    {key}: {value === -1 ? '∞' : value}
+                    {key}: {value === -1 ? '\u221e' : value}
                   </Tag>
                 ))}
               </Space>
@@ -339,6 +380,7 @@ function UserDetailPage() {
         title="Set Custom Limits"
         open={limitsModalOpen}
         onCancel={() => setLimitsModalOpen(false)}
+        width={520}
         footer={[
           <Button key="reset" onClick={handleResetLimits}>
             Reset to Defaults
@@ -358,11 +400,14 @@ function UserDetailPage() {
         <Form form={limitsForm} onFinish={handleUpdateLimits} layout="vertical">
           <Alert
             message="Set -1 for unlimited"
-            description="Use -1 to give this user unlimited requests for that type"
+            description="Use -1 to give this user unlimited requests for that type. Leave empty to use global defaults."
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
           />
+          
+          <Divider orientation="left" plain style={{ margin: '8px 0' }}>Basic Limits</Divider>
+          
           <Form.Item name="text" label="Text Requests (per day)" extra="-1 = unlimited">
             <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
@@ -378,6 +423,88 @@ function UserDetailPage() {
           <Form.Item name="document" label="Document Processing (per day)" extra="-1 = unlimited">
             <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
           </Form.Item>
+          <Form.Item name="presentation" label="Presentations (per day)" extra="-1 = unlimited">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default" />
+          </Form.Item>
+          
+          <Divider orientation="left" plain style={{ margin: '8px 0' }}>Premium Features</Divider>
+          
+          <Form.Item name="video_animate" label="Animate Photo / Photo-to-Video (per day)" extra="-1 = unlimited. Premium only by default.">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default (0 for free users)" />
+          </Form.Item>
+          <Form.Item name="long_video" label="Long Video Generation (per day)" extra="-1 = unlimited. Premium only by default.">
+            <InputNumber min={-1} style={{ width: '100%' }} placeholder="Default (0 for free users)" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Premium Modal */}
+      <Modal
+        title={
+          <Space>
+            <CrownOutlined style={{ color: '#faad14' }} />
+            {user.has_active_subscription ? 'Manage Premium Subscription' : 'Grant Premium Subscription'}
+          </Space>
+        }
+        open={premiumModalOpen}
+        onCancel={() => setPremiumModalOpen(false)}
+        footer={null}
+      >
+        {user.has_active_subscription && (
+          <Alert
+            message="User already has active premium"
+            description={
+              user.subscription_expires_at
+                ? `Expires: ${dayjs(user.subscription_expires_at).format('DD.MM.YYYY HH:mm')}`
+                : 'No expiry date set'
+            }
+            type="success"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
+        
+        <Form 
+          form={premiumForm} 
+          onFinish={handleGrantPremium} 
+          layout="vertical"
+          initialValues={{ months: 1 }}
+        >
+          <Form.Item 
+            name="months" 
+            label={user.has_active_subscription ? 'Extend premium by' : 'Grant premium for'}
+            rules={[{ required: true, message: 'Select duration' }]}
+          >
+            <Select>
+              <Select.Option value={1}>1 month</Select.Option>
+              <Select.Option value={3}>3 months</Select.Option>
+              <Select.Option value={6}>6 months</Select.Option>
+              <Select.Option value={12}>12 months</Select.Option>
+            </Select>
+          </Form.Item>
+          
+          <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+            {user.has_active_subscription && (
+              <Popconfirm
+                title="Revoke premium?"
+                description="This will downgrade the user to free plan immediately."
+                onConfirm={handleRevokePremium}
+                okText="Yes, revoke"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true }}
+              >
+                <Button danger>
+                  Revoke Premium
+                </Button>
+              </Popconfirm>
+            )}
+            <Button onClick={() => setPremiumModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="primary" htmlType="submit" icon={<CrownOutlined />}>
+              {user.has_active_subscription ? 'Extend Premium' : 'Grant Premium'}
+            </Button>
+          </Space>
         </Form>
       </Modal>
 

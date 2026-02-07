@@ -323,14 +323,40 @@ async def get_unread_count(
 @router.get("/photo/{file_id}")
 async def get_support_photo(
     file_id: str,
-    current_admin: Admin = Depends(get_current_admin)
+    token: str = Query(None),
 ):
     """
     Proxy endpoint to download Telegram photos by file_id.
     This solves the problem of expired Telegram file URLs in the support chat.
+    
+    Authentication via ?token=<jwt> query parameter (for <img src> tags).
+    The frontend appends the auth token to the image URL.
     """
     from fastapi.responses import StreamingResponse
     import io
+    
+    # Verify auth token from query param
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required (pass ?token=<jwt>)"
+        )
+    
+    try:
+        from api.services.auth_service import auth_service
+        token_data = auth_service.decode_token(token)
+        if not token_data:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token"
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
     
     try:
         from aiogram import Bot

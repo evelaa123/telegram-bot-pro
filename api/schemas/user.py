@@ -58,6 +58,14 @@ class UserLimitsUpdate(BaseModel):
     video: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
     voice: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
     document: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    presentation: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    video_animate: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+    long_video: Optional[int] = Field(None, ge=-1, description="-1 = unlimited, 0 = use global default")
+
+
+class GrantPremiumRequest(BaseModel):
+    """Request to grant premium to user."""
+    months: int = Field(1, ge=1, le=24, description="Number of months to grant")
 
 
 class UserRequestHistory(BaseModel):
@@ -85,3 +93,9 @@ class UserRequestHistoryResponse(BaseModel):
 class SendMessageRequest(BaseModel):
     """Send message to user request."""
     message: str = Field(..., min_length=1, max_length=4096)
+
+
+class RevokePremiumResponse(BaseModel):
+    """Response for premium revocation."""
+    message: str
+    subscription_type: str

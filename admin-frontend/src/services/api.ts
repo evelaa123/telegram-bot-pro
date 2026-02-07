@@ -92,7 +92,13 @@ export const usersApi = {
     api.get(`/users/${telegramId}/requests`, { params: { limit } }),
   
   sendMessage: (telegramId: number, message: string) =>
-    api.post(`/users/${telegramId}/message`, { message })
+    api.post(`/users/${telegramId}/message`, { message }),
+  
+  grantPremium: (telegramId: number, months: number) =>
+    api.post(`/users/${telegramId}/premium`, { months }),
+  
+  revokePremium: (telegramId: number) =>
+    api.delete(`/users/${telegramId}/premium`)
 };
 
 export const statsApi = {

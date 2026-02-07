@@ -21,6 +21,7 @@ import {
   MessageOutlined,
 } from '@ant-design/icons';
 import { supportApi } from '../services/api';
+import { useAuthStore } from '../store/authStore';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
@@ -137,6 +138,12 @@ function SupportPage() {
   };
 
   const selectedConversation = conversations.find(c => c.user_id === selectedUserId);
+  const authToken = useAuthStore.getState().token;
+
+  // Build photo URL with auth token for <img src>
+  const getPhotoUrl = (fileId: string) => {
+    return `/api/support/photo/${fileId}?token=${encodeURIComponent(authToken || '')}`;
+  };
 
   // Parse message to extract photo and text
   const parseMessage = (message: string) => {
@@ -282,10 +289,10 @@ function SupportPage() {
                           }}
                           bodyStyle={{ padding: '8px 12px' }}
                         >
-                          {hasPhoto && (
+                          {hasPhoto && photoFileId && (
                             <div style={{ marginBottom: text ? 8 : 0 }}>
                               <img
-                                src={`/api/support/photo/${photoFileId}`}
+                                src={getPhotoUrl(photoFileId)}
                                 alt="Attached"
                                 style={{
                                   maxWidth: '100%',
@@ -293,7 +300,7 @@ function SupportPage() {
                                   borderRadius: 8,
                                   cursor: 'pointer'
                                 }}
-                                onClick={() => window.open(`/api/support/photo/${photoFileId}`, '_blank')}
+                                onClick={() => window.open(getPhotoUrl(photoFileId), '_blank')}
                                 onError={(e) => {
                                   // Fallback to placeholder if image fails to load
                                   const target = e.target as HTMLImageElement;

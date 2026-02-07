@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from api.schemas.user import (
     UserResponse, UserListResponse, UserUpdate, 
     UserLimitsUpdate, UserRequestHistory, UserRequestHistoryResponse,
-    SendMessageRequest
+    SendMessageRequest, GrantPremiumRequest
 )
 from api.services.auth_service import get_current_admin, require_role
 from database import async_session_maker
@@ -218,7 +218,7 @@ async def update_user_limits(
     
     # Build limits dict
     limits_dict = {}
-    for field in ["text", "image", "video", "voice", "document"]:
+    for field in ["text", "image", "video", "voice", "document", "presentation", "video_animate", "long_video"]:
         value = getattr(limits, field)
         if value is not None:
             limits_dict[field] = value
@@ -257,6 +257,81 @@ async def reset_user_limits(
     )
     
     return {"message": "Limits reset to defaults"}
+
+
+@router.post("/{telegram_id}/premium")
+async def grant_premium(
+    telegram_id: int,
+    request: GrantPremiumRequest,
+    current_admin: Admin = Depends(require_role(["superadmin", "admin"]))
+):
+    """Grant or extend premium subscription for a user."""
+    from bot.services.subscription_service import subscription_service
+    
+    user = await user_service.get_user_by_telegram_id(telegram_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    try:
+        await subscription_service.activate_subscription(
+            telegram_id=telegram_id,
+            months=request.months,
+            payment_id=f"admin_grant_{telegram_id}_{int(datetime.now().timestamp())}",
+            payment_provider="admin_grant",
+            amount_rub=0
+        )
+        
+        logger.info(
+            "Premium granted by admin",
+            telegram_id=telegram_id,
+            months=request.months,
+            admin=current_admin.username
+        )
+        
+        return {"message": f"Premium granted for {request.months} month(s)"}
+        
+    except Exception as e:
+        logger.error("Failed to grant premium", error=str(e), telegram_id=telegram_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to grant premium: {str(e)}"
+        )
+
+
+@router.delete("/{telegram_id}/premium")
+async def revoke_premium(
+    telegram_id: int,
+    current_admin: Admin = Depends(require_role(["superadmin", "admin"]))
+):
+    """Revoke premium subscription from a user."""
+    from database.models import SubscriptionType
+    
+    user = await user_service.get_user_by_telegram_id(telegram_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one()
+        user.subscription_type = SubscriptionType.FREE
+        user.subscription_expires_at = None
+        await session.commit()
+    
+    logger.info(
+        "Premium revoked by admin",
+        telegram_id=telegram_id,
+        admin=current_admin.username
+    )
+    
+    return {"message": "Premium revoked", "subscription_type": "free"}
 
 
 @router.post("/{telegram_id}/block")
