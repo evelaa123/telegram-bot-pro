@@ -161,9 +161,9 @@ async def callback_image_edit(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "image:animate")
-async def callback_image_animate(callback: CallbackQuery):
-    """Handle animate photo (image-to-video) request."""
+@router.callback_query(F.data == "photo:animate")
+async def callback_photo_animate(callback: CallbackQuery):
+    """Handle animate photo from photo analysis result."""
     user = callback.from_user
     language = await user_service.get_user_language(user.id)
     
@@ -184,7 +184,7 @@ async def callback_image_animate(callback: CallbackQuery):
             )
         return
     
-    # Check limits for video_animate
+    # Check limits
     has_limit, current, max_limit = await limit_service.check_limit(
         user.id, RequestType.VIDEO_ANIMATE
     )
@@ -202,21 +202,17 @@ async def callback_image_animate(callback: CallbackQuery):
             )
         return
     
-    # Get the photo from the message (callback.message should be a photo message)
-    if callback.message.photo:
-        photo = callback.message.photo[-1]
-        file_id = photo.file_id
-    else:
-        # Try to get from last_image_prompt state
-        file_id = None
+    # Get file_id from Redis
+    file_id = await redis_client.client.get(f"user:{user.id}:last_photo_file_id")
     
     if not file_id:
-        # Save the message_id to retrieve photo later
         if language == "ru":
-            await callback.answer("Не удалось найти фото для оживления", show_alert=True)
+            await callback.answer("Фото не найдено. Отправьте фото заново.", show_alert=True)
         else:
-            await callback.answer("Could not find photo to animate", show_alert=True)
+            await callback.answer("Photo not found. Please send the photo again.", show_alert=True)
         return
+    
+    file_id = file_id.decode() if isinstance(file_id, bytes) else file_id
     
     # Store file_id and switch to animate prompt state
     await redis_client.set_user_state(user.id, f"animate_photo:{file_id}")
@@ -226,14 +222,14 @@ async def callback_image_animate(callback: CallbackQuery):
             "🎞 <b>Оживление фото</b>\n\n"
             "Опишите, как должно двигаться/оживать изображение.\n\n"
             "<i>Например: «Камера медленно приближается, волосы развеваются на ветру»</i>\n\n"
-            "Или отправьте пустое сообщение для автоматического оживления."
+            "Или отправьте просто точку (.) для автоматического оживления."
         )
     else:
         await callback.message.answer(
             "🎞 <b>Animate Photo</b>\n\n"
             "Describe how the image should move/animate.\n\n"
             "<i>Example: 'Camera slowly zooms in, hair blowing in the wind'</i>\n\n"
-            "Or send an empty message for automatic animation."
+            "Or send just a dot (.) for automatic animation."
         )
     
     await callback.answer()
@@ -427,3 +423,4 @@ async def animate_progress(message: Message, language: str):
             await asyncio.sleep(1)
     except asyncio.CancelledError:
         pass
+

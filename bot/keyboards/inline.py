@@ -91,34 +91,22 @@ def get_image_actions_keyboard(
 
 
 def get_photo_actions_keyboard(
-    file_id: str,
+    file_id: str = None,  # deprecated, не используется
     language: str = "ru"
 ) -> InlineKeyboardMarkup:
-    """
-    Get action keyboard shown after photo analysis.
-    Includes 'Animate Photo' button for image-to-video.
-    """
     texts = {
-        "ru": {
-            "animate": "🎞 Оживить фото",
-        },
-        "en": {
-            "animate": "🎞 Animate Photo",
-        }
+        "ru": {"animate": "🎞 Оживить фото"},
+        "en": {"animate": "🎞 Animate Photo"}
     }
-    
     t = texts.get(language, texts["ru"])
-    
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(
             text=t["animate"],
-            callback_data=f"photo:animate:{file_id}"
+            callback_data="photo:animate"
         )
     )
-    
     return builder.as_markup()
-
 
 def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """

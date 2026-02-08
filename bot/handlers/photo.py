@@ -3,9 +3,9 @@ Photo message handler.
 Handles photo messages sent by users.
 """
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatAction
-
+from database.models import RequestType, RequestStatus
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
@@ -182,11 +182,21 @@ async def handle_photo_analysis(message: Message, user_id: int):
         if len(result) > 4000:
             result = result[:4000] + "..."
         
-        # Show result with Animate button
+        # Save file_id to Redis for animate button (avoids 64-byte callback_data limit)
+        await redis_client.client.set(
+            f"user:{user_id}:last_photo_file_id",
+            photo.file_id,
+            ex=3600
+        )
+        
+        # Show result with Animate button (no file_id in callback_data!)
         await status_msg.edit_text(
             result,
-            reply_markup=get_photo_actions_keyboard(photo.file_id, language)
+            reply_markup=get_photo_actions_keyboard(language=language)
         )
+        
+        # Get actual model used from usage info
+        model_used = usage.get("model", "vision")
         
         # Increment usage and record request
         await limit_service.increment_usage(user_id, RequestType.IMAGE)
@@ -195,7 +205,7 @@ async def handle_photo_analysis(message: Message, user_id: int):
             request_type=RequestType.IMAGE,
             prompt=prompt[:500],
             response_preview=result[:500],
-            model="gpt-4o-vision",
+            model=model_used,
             status=RequestStatus.SUCCESS,
             duration_ms=duration_ms
         )
@@ -217,7 +227,7 @@ async def handle_photo_analysis(message: Message, user_id: int):
             telegram_id=user_id,
             request_type=RequestType.IMAGE,
             prompt=prompt[:500] if prompt else "photo analysis",
-            model="gpt-4o-vision",
+            model="vision",
             status=RequestStatus.FAILED,
             error_message=str(e),
             duration_ms=duration_ms
@@ -267,3 +277,64 @@ async def handle_animate_new_photo(message: Message, user_id: int):
             "<i>Example: 'Camera slowly zooms in, hair blowing in the wind'</i>\n\n"
             "Or send just a dot (.) for automatic animation."
         )
+
+
+@router.callback_query(F.data == "photo:animate")
+async def callback_photo_animate(callback: CallbackQuery):
+    """Handle animate photo button from photo analysis result."""
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    # Check premium
+    from bot.services.subscription_service import subscription_service
+    is_premium = await subscription_service.check_premium(user.id)
+    
+    if not is_premium:
+        if language == "ru":
+            await callback.answer("💎 Оживление фото доступно только для премиум-подписчиков!", show_alert=True)
+        else:
+            await callback.answer("💎 Animate photo is available for premium subscribers only!", show_alert=True)
+        return
+    
+    # Check limits
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user.id, RequestType.VIDEO_ANIMATE
+    )
+    
+    if not has_limit:
+        if language == "ru":
+            await callback.answer(f"⚠️ Лимит оживления фото исчерпан ({max_limit})", show_alert=True)
+        else:
+            await callback.answer(f"⚠️ Animate photo limit reached ({max_limit})", show_alert=True)
+        return
+    
+    # Get file_id from Redis (saved during photo analysis)
+    file_id = await redis_client.client.get(f"user:{user.id}:last_photo_file_id")
+    
+    if not file_id:
+        if language == "ru":
+            await callback.answer("Фото не найдено. Отправьте фото заново.", show_alert=True)
+        else:
+            await callback.answer("Photo not found. Send photo again.", show_alert=True)
+        return
+    
+    file_id = file_id.decode() if isinstance(file_id, bytes) else file_id
+    
+    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}")
+    
+    if language == "ru":
+        await callback.message.answer(
+            "🎞 <b>Оживление фото</b>\n\n"
+            "Опишите, как должно двигаться/оживать изображение.\n\n"
+            "<i>Например: «Камера медленно приближается, волосы развеваются на ветру»</i>\n\n"
+            "Или отправьте точку (.) для автоматического оживления."
+        )
+    else:
+        await callback.message.answer(
+            "🎞 <b>Animate Photo</b>\n\n"
+            "Describe how the image should move/animate.\n\n"
+            "<i>Example: 'Camera slowly zooms in, hair blowing in the wind'</i>\n\n"
+            "Or send a dot (.) for automatic animation."
+        )
+    
+    await callback.answer()

@@ -37,8 +37,8 @@ class AIService:
         """Get current model configuration from settings."""
         return {
             "text": getattr(settings, 'default_text_model', 'qwen3-max-2026-01-23'),
-            "vision": getattr(settings, 'default_text_model', 'qwen3-max-2026-01-23'),  # Same as text
-            "image": getattr(settings, 'default_image_model', 'dall-e-3'),
+            "vision": getattr(settings, 'default_vision_model', 'qwen3-vl-30b-a3b'),
+            "image": getattr(settings, 'default_image_model', 'qwen-image'),
             "video": getattr(settings, 'default_video_model', 'sora-2'),
             "voice": getattr(settings, 'default_whisper_model', 'whisper-1'),
         }

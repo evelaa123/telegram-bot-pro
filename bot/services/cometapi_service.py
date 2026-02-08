@@ -64,13 +64,14 @@ class CometAPIService:
     PRICING = {
         "qwen-3-max": {"input": 0.002, "output": 0.008},
         "qwen3-max-2026-01-23": {"input": 0.002, "output": 0.008},
+        "qwen3-vl-30b-a3b": {"input": 0.00012, "output": 0.00048},
+        "qwen3-vl-235b-a22b": {"input": 0.00024, "output": 0.00096},
         "dall-e-3": {
             "1024x1024": 0.04,
             "1792x1024": 0.08,
             "1024x1792": 0.08
         },
-        "whisper-1": 0.006,  # per minute
-        # Video pricing (per second)
+        "whisper-1": 0.006,
         "sora-2": {"per_second": 0.05},
         "sora-2-pro": {"per_second": 0.10}
     }
@@ -644,11 +645,8 @@ class CometAPIService:
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Analyze image using vision model.
-        
-        Returns:
-            Tuple of (analysis_text, usage_info)
         """
-        model = model or self.MODELS["text"]  # Qwen-3-Max supports vision
+        model = model or self.MODELS["text"]
         
         try:
             content = [{"type": "text", "text": prompt}]
@@ -674,24 +672,27 @@ class CometAPIService:
             )
             
             text = response.choices[0].message.content
+            
+            # Get pricing for the actual model used
+            pricing = self.PRICING.get(model, {"input": 0.002, "output": 0.008})
+            cost = (
+                (response.usage.prompt_tokens / 1000) * pricing["input"] +
+                (response.usage.completion_tokens / 1000) * pricing["output"]
+            )
+            
             usage = {
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
                 "model": model,
                 "provider": "cometapi",
-                "cost_usd": Decimal(str(round(
-                    (response.usage.prompt_tokens / 1000) * 0.002 +
-                    (response.usage.completion_tokens / 1000) * 0.008,
-                    6
-                )))
+                "cost_usd": Decimal(str(round(cost, 6)))
             }
             
             return text, usage
             
         except Exception as e:
-            logger.error("CometAPI vision analysis error", error=str(e))
-            raise
-    
+            logger.error("CometAPI vision analysis error", error=str(e), model=model)
+            raise    
     async def analyze_document_images(
         self,
         images: List[bytes],
