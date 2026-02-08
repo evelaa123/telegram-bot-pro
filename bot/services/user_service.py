@@ -227,11 +227,11 @@ class UserService:
             if not user:
                 return None
             
-            valid_keys = {"text", "image", "video", "voice", "document"}
+            valid_keys = {"text", "image", "video", "voice", "document", "presentation", "video_animate", "long_video"}
             custom_limits = dict(user.custom_limits) if user.custom_limits else {}
             
             for key, value in limits.items():
-                if key in valid_keys and isinstance(value, int) and value >= 0:
+                if key in valid_keys and isinstance(value, int) and value >= -1:
                     custom_limits[key] = value
             
             user.custom_limits = custom_limits

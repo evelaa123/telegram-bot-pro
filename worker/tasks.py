@@ -186,12 +186,31 @@ async def process_video_generation(ctx, task_id: int):
             )
             await session.commit()
         
+        # Download reference image if this is an animate-photo task
+        input_reference = None
+        is_animate = False
+        if task.reference_image_file_id:
+            is_animate = True
+            try:
+                from aiogram import Bot as DlBot
+                dl_bot = DlBot(token=settings.telegram_bot_token)
+                file = await dl_bot.get_file(task.reference_image_file_id)
+                file_bytes_io = await dl_bot.download_file(file.file_path)
+                import io
+                input_reference = io.BytesIO(file_bytes_io.read()).getvalue()
+                await dl_bot.session.close()
+                logger.info("Reference image downloaded", task_id=task_id, size=len(input_reference))
+            except Exception as dl_err:
+                logger.error("Failed to download reference image", task_id=task_id, error=str(dl_err))
+                # Continue without reference - will generate from prompt only
+        
         # Create video using AI service (CometAPI or OpenAI fallback)
         video_info = await ai_service.create_video(
             prompt=task.prompt,
             model=task.model,
             duration=task.duration_seconds,
-            telegram_id=telegram_id
+            telegram_id=telegram_id,
+            input_reference=input_reference
         )
         
         video_id = video_info["video_id"]
@@ -283,11 +302,12 @@ async def process_video_generation(ctx, task_id: int):
             )
             await session.commit()
         
-        # Increment usage and record request
-        await limit_service.increment_usage(telegram_id, RequestType.VIDEO)
+        # Increment usage and record request (use correct type for animate vs regular)
+        req_type = RequestType.VIDEO_ANIMATE if is_animate else RequestType.VIDEO
+        await limit_service.increment_usage(telegram_id, req_type)
         await limit_service.record_request(
             telegram_id=telegram_id,
-            request_type=RequestType.VIDEO,
+            request_type=req_type,
             prompt=task.prompt[:500],
             model=task.model,
             status=RequestStatus.SUCCESS
@@ -296,7 +316,8 @@ async def process_video_generation(ctx, task_id: int):
         logger.info(
             "Video generation completed",
             task_id=task_id,
-            video_id=video_id
+            video_id=video_id,
+            is_animate=is_animate
         )
         
     except Exception as e:
@@ -324,16 +345,20 @@ async def process_video_generation(ctx, task_id: int):
         
         bot = Bot(token=settings.telegram_bot_token)
         
+        is_animate = bool(task.reference_image_file_id) if task else False
+        
         if language == "ru":
+            error_label = "Ошибка оживления фото" if is_animate else "Ошибка генерации видео"
             error_text = (
-                "❌ <b>Ошибка генерации видео</b>\n\n"
-                "К сожалению, не удалось сгенерировать видео.\n"
+                f"❌ <b>{error_label}</b>\n\n"
+                "К сожалению, не удалось выполнить запрос.\n"
                 "Лимит не списан. Попробуйте ещё раз."
             )
         else:
+            error_label = "Photo Animation Error" if is_animate else "Video Generation Error"
             error_text = (
-                "❌ <b>Video Generation Error</b>\n\n"
-                "Unfortunately, video generation failed.\n"
+                f"❌ <b>{error_label}</b>\n\n"
+                "Unfortunately, the request failed.\n"
                 "Limit not charged. Please try again."
             )
         
@@ -346,9 +371,10 @@ async def process_video_generation(ctx, task_id: int):
         await bot.session.close()
         
         # Record failed request
+        req_type = RequestType.VIDEO_ANIMATE if is_animate else RequestType.VIDEO
         await limit_service.record_request(
             telegram_id=telegram_id,
-            request_type=RequestType.VIDEO,
+            request_type=req_type,
             prompt=task.prompt[:500],
             model=task.model,
             status=RequestStatus.FAILED,
@@ -672,13 +698,19 @@ async def process_long_video(
         clip_video_bytes = []
         
         for i in range(num_clips):
-            # Build continuation prompt
+            # Build continuation prompt with strong visual continuity cues
             if i == 0:
-                clip_prompt = prompt
+                clip_prompt = (
+                    f"[Part 1 of {num_clips}] Beginning of the scene. "
+                    f"{prompt}. "
+                    f"Maintain consistent visual style, lighting, and color palette throughout."
+                )
             else:
                 clip_prompt = (
-                    f"Continue the video seamlessly from the previous scene. "
-                    f"Part {i+1}/{num_clips}: {prompt}"
+                    f"[Part {i+1} of {num_clips}] Seamless continuation of the previous scene. "
+                    f"Continue exactly where the last clip ended, maintaining the same "
+                    f"camera style, color grading, lighting, characters, and environment. "
+                    f"Scene: {prompt}"
                 )
             
             # Update progress

@@ -153,8 +153,31 @@ async def get_user(
         )
         request_count = count_result.scalar() or 0
     
-    user_data = UserResponse.model_validate(user)
-    user_data.total_requests = request_count
+    from datetime import timezone as tz
+    now = datetime.now(tz.utc)
+    
+    has_active = False
+    if user.subscription_type.value == "premium" and user.subscription_expires_at:
+        has_active = user.subscription_expires_at > now
+    
+    user_data = UserResponse(
+        id=user.id,
+        telegram_id=user.telegram_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        language_code=user.language_code,
+        is_blocked=user.is_blocked,
+        custom_limits=user.custom_limits,
+        settings=user.settings,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        last_active_at=user.last_active_at,
+        subscription_type=user.subscription_type.value,
+        subscription_expires_at=user.subscription_expires_at,
+        has_active_subscription=has_active,
+        total_requests=request_count
+    )
     
     return user_data
 

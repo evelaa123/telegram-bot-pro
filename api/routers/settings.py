@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
         "premium_presentation": -1,
         "premium_video_animate": 10,
         "premium_long_video": 3,
+        "long_video_one_time_price_rub": 0,
     },
     "bot": {
         "is_enabled": True,

@@ -131,6 +131,122 @@ class SubscriptionService:
                 "expires_at": user.subscription_expires_at
             }
     
+    async def create_long_video_payment(
+        self,
+        telegram_id: int
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Create one-time payment for long video generation.
+        
+        Returns:
+            Tuple of (payment_url, payment_id) or (None, None) on error
+        """
+        # Get price from settings
+        try:
+            from api.routers.settings import get_setting
+            db_limits = await get_setting("limits")
+            price = db_limits.get("long_video_one_time_price_rub", 0)
+        except Exception:
+            price = 0
+        
+        if price <= 0:
+            logger.error("Long video one-time payment not configured (price=0)")
+            return None, None
+        
+        payment_id = f"longvideo_{telegram_id}_{uuid.uuid4().hex[:8]}"
+        
+        if settings.payment_provider == "yookassa":
+            shop_id = settings.yookassa_shop_id
+            secret_key = settings.yookassa_secret_key
+            
+            if not shop_id or not secret_key:
+                logger.error("YooKassa not configured for long video payment")
+                return None, None
+            
+            payload = {
+                "amount": {
+                    "value": f"{price}.00",
+                    "currency": "RUB"
+                },
+                "capture": True,
+                "confirmation": {
+                    "type": "redirect",
+                    "return_url": f"https://t.me/{settings.bot_username}"
+                },
+                "description": f"Генерация длинного видео (до 36 сек)",
+                "metadata": {
+                    "telegram_id": telegram_id,
+                    "payment_type": "long_video",
+                    "payment_id": payment_id
+                }
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Idempotence-Key": payment_id
+            }
+            
+            auth = aiohttp.BasicAuth(shop_id, secret_key)
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.YOOKASSA_API_URL}/payments",
+                        json=payload,
+                        headers=headers,
+                        auth=auth
+                    ) as response:
+                        if response.status != 200:
+                            error = await response.text()
+                            logger.error("YooKassa long video payment failed", error=error)
+                            return None, None
+                        
+                        data = await response.json()
+                        
+                        payment_url = data["confirmation"]["confirmation_url"]
+                        yookassa_id = data["id"]
+                        
+                        logger.info(
+                            "Long video payment created",
+                            payment_id=payment_id,
+                            yookassa_id=yookassa_id,
+                            telegram_id=telegram_id,
+                            price=price
+                        )
+                        
+                        return payment_url, yookassa_id
+                        
+            except Exception as e:
+                logger.error("Failed to create long video payment", error=str(e))
+                return None, None
+        
+        return None, None
+    
+    async def grant_long_video_access(self, telegram_id: int) -> bool:
+        """
+        Grant one long video generation to a user (after one-time payment).
+        Increments their long_video custom limit by 1.
+        """
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                return False
+            
+            from sqlalchemy.orm import attributes
+            custom_limits = dict(user.custom_limits) if user.custom_limits else {}
+            current_long_video = custom_limits.get("long_video", 0)
+            custom_limits["long_video"] = current_long_video + 1
+            user.custom_limits = custom_limits
+            attributes.flag_modified(user, "custom_limits")
+            await session.commit()
+            
+            logger.info("Long video access granted (one-time)", telegram_id=telegram_id)
+            return True
+    
     async def create_payment(
         self,
         telegram_id: int,
@@ -257,12 +373,48 @@ class SubscriptionService:
             
             metadata = payment.get("metadata", {})
             telegram_id = metadata.get("telegram_id")
-            months = metadata.get("months", 1)
             payment_id = metadata.get("payment_id")
+            payment_type = metadata.get("payment_type", "subscription")
             
             if not telegram_id:
                 logger.error("Missing telegram_id in payment metadata")
                 return False
+            
+            # Handle different payment types
+            if payment_type == "long_video":
+                # One-time long video payment
+                success = await self.grant_long_video_access(int(telegram_id))
+                if success:
+                    # Notify user
+                    try:
+                        from aiogram import Bot
+                        bot = Bot(token=settings.telegram_bot_token)
+                        
+                        from bot.services.user_service import user_service
+                        language = await user_service.get_user_language(int(telegram_id))
+                        
+                        if language == "ru":
+                            text = (
+                                "✅ <b>Оплата прошла успешно!</b>\n\n"
+                                "Вам доступна одна генерация длинного видео.\n"
+                                "Нажмите /video и выберите 🎥 Длинное видео."
+                            )
+                        else:
+                            text = (
+                                "✅ <b>Payment successful!</b>\n\n"
+                                "You have one long video generation available.\n"
+                                "Press /video and select 🎥 Long Video."
+                            )
+                        
+                        await bot.send_message(chat_id=int(telegram_id), text=text, parse_mode="HTML")
+                        await bot.session.close()
+                    except Exception as notify_err:
+                        logger.warning("Failed to notify about long video payment", error=str(notify_err))
+                
+                return success
+            
+            # Standard subscription payment
+            months = metadata.get("months", 1)
             
             # Activate subscription
             return await self.activate_subscription(

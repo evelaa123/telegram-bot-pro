@@ -23,6 +23,8 @@ class GlobalLimits(BaseModel):
     premium_video_animate: int = Field(10, ge=-1)
     # Long video (stitching) - premium only
     premium_long_video: int = Field(3, ge=-1)
+    # One-time long video payment price (0 = disabled)
+    long_video_one_time_price_rub: int = Field(0, ge=0, description="Price in RUB for one-time long video generation (0 = disabled)")
 
 
 class BotSettings(BaseModel):

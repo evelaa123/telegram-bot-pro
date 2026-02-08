@@ -108,6 +108,43 @@ def get_photo_actions_keyboard(
     )
     return builder.as_markup()
 
+def get_long_video_purchase_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
+    """Keyboard for one-time long video purchase or premium subscription."""
+    texts = {
+        "ru": {
+            "buy_one": "💰 Купить разовую генерацию",
+            "subscribe": "💎 Оформить подписку",
+            "cancel": "❌ Отмена"
+        },
+        "en": {
+            "buy_one": "💰 Buy one-time generation",
+            "subscribe": "💎 Get subscription",
+            "cancel": "❌ Cancel"
+        }
+    }
+    t = texts.get(language, texts["ru"])
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=t["buy_one"],
+            callback_data="video:long:buy_one"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["subscribe"],
+            callback_data="subscription:buy"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["cancel"],
+            callback_data="video:cancel"
+        )
+    )
+    return builder.as_markup()
+
+
 def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """
     Get video model selection keyboard.

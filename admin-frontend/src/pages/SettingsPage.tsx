@@ -37,6 +37,7 @@ interface GlobalLimits {
   premium_presentation: number;
   premium_video_animate: number;
   premium_long_video: number;
+  long_video_one_time_price_rub: number;
 }
 
 interface BotSettings {
@@ -372,6 +373,17 @@ function SettingsPage() {
                 <Col span={8}>
                   <Form.Item name="premium_long_video" label="Long Video">
                     <InputNumber min={-1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              
+              <Divider orientation="left">
+                💰 One-Time Purchases
+              </Divider>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Form.Item name="long_video_one_time_price_rub" label="Long Video Price (₽)" extra="One-time payment for non-premium users. 0 = disabled.">
+                    <InputNumber min={0} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
               </Row>
