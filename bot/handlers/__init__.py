@@ -25,6 +25,10 @@ def setup_routers() -> Router:
     main_router = Router()
     
     # Include all routers in order of priority
+    # channel_comments FIRST — handles ALL group/supergroup messages
+    # (commands, text, photos, voice, audio, documents in groups)
+    main_router.include_router(channel_comments_router)
+    
     main_router.include_router(start_router)
     main_router.include_router(callbacks_router)
     main_router.include_router(settings_router)
@@ -35,7 +39,6 @@ def setup_routers() -> Router:
     main_router.include_router(image_router)
     main_router.include_router(video_router)
     main_router.include_router(voice_router)
-    main_router.include_router(channel_comments_router)  # Группы и комментарии - ПЕРЕД document!
     main_router.include_router(document_router)
     main_router.include_router(inline_router)
     main_router.include_router(text_router)  # Text должен быть ПОСЛЕДНИМ (catch-all)

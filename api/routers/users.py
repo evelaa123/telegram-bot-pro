@@ -2,7 +2,7 @@
 Users router.
 Handles user management endpoints.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 
@@ -376,7 +376,8 @@ async def revoke_premium(
     current_admin: Admin = Depends(require_role(["superadmin", "admin"]))
 ):
     """Revoke premium subscription from a user."""
-    from database.models import SubscriptionType
+    from database.models import SubscriptionType, Subscription
+    from sqlalchemy import update, and_
     
     user = await user_service.get_user_by_telegram_id(telegram_id)
     if not user:
@@ -392,6 +393,21 @@ async def revoke_premium(
         user = result.scalar_one()
         user.subscription_type = SubscriptionType.FREE
         user.subscription_expires_at = None
+        
+        # Deactivate all active subscription records for this user
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            update(Subscription)
+            .where(and_(
+                Subscription.user_id == user.id,
+                Subscription.is_active == True
+            ))
+            .values(
+                is_active=False,
+                cancelled_at=now
+            )
+        )
+        
         await session.commit()
     
     # Notify user via Telegram about premium revocation

@@ -88,7 +88,7 @@ function SubscriptionsPage() {
       title: t('col.amount'),
       dataIndex: 'amount_rub',
       key: 'amount_rub',
-      render: (val: number) => `${val.toFixed(2)} \u20bd`,
+      render: (val: number) => `${val.toFixed(2)} ₽`,
     },
     {
       title: t('col.provider'),
@@ -166,7 +166,7 @@ function SubscriptionsPage() {
               value={data?.total_revenue_rub || 0}
               precision={2}
               prefix={<DollarOutlined />}
-              suffix="\u20bd"
+              suffix="₽"
             />
           </Card>
         </Col>
