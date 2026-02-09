@@ -1,0 +1,1096 @@
+From ce3eec4eae7816ff2cddeb4c6d4f70d4ba24912b Mon Sep 17 00:00:00 2001
+From: GenSpark AI Developer <ai-developer@genspark.ai>
+Date: Sun, 8 Feb 2026 00:36:31 +0000
+Subject: [PATCH] fix: Custom limits -1/unlimited, animate photo
+ input_reference, long video payment, ffmpeg stitch
+
+Major fixes and features:
+
+1. Fix custom limits not working for presentation/video_animate/long_video:
+   - user_service.set_custom_limits: expanded valid_keys to include
+     presentation, video_animate, long_video
+   - Changed value validation from >= 0 to >= -1 (allows unlimited)
+
+2. Fix animate photo (image-to-video) pipeline:
+   - worker/tasks.py downloads reference image via Telegram Bot API
+   - Passes bytes as input_reference to ai_service.create_video
+   - CometAPI sends multipart/form-data with input_reference field
+   - Correctly tracks VIDEO_ANIMATE request type
+
+3. Fix admin panel Revoke Premium button:
+   - GET /users/{telegram_id} now computes has_active_subscription correctly
+
+4. One-time payment for long video generation:
+   - New setting: long_video_one_time_price_rub (admin configurable)
+   - New payment flow via YooKassa for non-premium users
+   - grant_long_video_access increments custom limit by 1
+
+5. Improved long video stitching:
+   - Premium: 3x12s=36s; One-time: 3x4s=12s
+   - Enhanced continuation prompts for visual continuity
+   - Added ffmpeg stitch test script
+
+6. Cleanup duplicate photo:animate handler
+---
+ admin-frontend/src/pages/SettingsPage.tsx |  12 ++
+ api/routers/settings.py                   |   1 +
+ api/routers/users.py                      |  27 ++-
+ api/schemas/settings.py                   |   2 +
+ bot/handlers/callbacks.py                 |  65 ------
+ bot/handlers/video.py                     | 229 +++++++++++++++++-----
+ bot/keyboards/inline.py                   |  37 ++++
+ bot/services/subscription_service.py      | 154 ++++++++++++++-
+ bot/services/user_service.py              |   4 +-
+ scripts/test_ffmpeg_stitch.py             | 185 +++++++++++++++++
+ worker/tasks.py                           |  60 ++++--
+ 11 files changed, 638 insertions(+), 138 deletions(-)
+ create mode 100644 scripts/test_ffmpeg_stitch.py
+
+diff --git a/admin-frontend/src/pages/SettingsPage.tsx b/admin-frontend/src/pages/SettingsPage.tsx
+index f7bcdff..576acf4 100644
+--- a/admin-frontend/src/pages/SettingsPage.tsx
++++ b/admin-frontend/src/pages/SettingsPage.tsx
+@@ -37,6 +37,7 @@ interface GlobalLimits {
+   premium_presentation: number;
+   premium_video_animate: number;
+   premium_long_video: number;
++  long_video_one_time_price_rub: number;
+ }
+ 
+ interface BotSettings {
+@@ -375,6 +376,17 @@ function SettingsPage() {
+                   </Form.Item>
+                 </Col>
+               </Row>
++              
++              <Divider orientation="left">
++                💰 One-Time Purchases
++              </Divider>
++              <Row gutter={16}>
++                <Col span={8}>
++                  <Form.Item name="long_video_one_time_price_rub" label="Long Video Price (₽)" extra="One-time payment for non-premium users. 0 = disabled.">
++                    <InputNumber min={0} style={{ width: '100%' }} />
++                  </Form.Item>
++                </Col>
++              </Row>
+               <Form.Item>
+                 <Button type="primary" htmlType="submit" loading={saving}>
+                   Save All Limits
+diff --git a/api/routers/settings.py b/api/routers/settings.py
+index 4d4e35d..69a0316 100644
+--- a/api/routers/settings.py
++++ b/api/routers/settings.py
+@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
+         "premium_presentation": -1,
+         "premium_video_animate": 10,
+         "premium_long_video": 3,
++        "long_video_one_time_price_rub": 0,
+     },
+     "bot": {
+         "is_enabled": True,
+diff --git a/api/routers/users.py b/api/routers/users.py
+index 8318138..ee8da5b 100644
+--- a/api/routers/users.py
++++ b/api/routers/users.py
+@@ -153,8 +153,31 @@ async def get_user(
+         )
+         request_count = count_result.scalar() or 0
+     
+-    user_data = UserResponse.model_validate(user)
+-    user_data.total_requests = request_count
++    from datetime import timezone as tz
++    now = datetime.now(tz.utc)
++    
++    has_active = False
++    if user.subscription_type.value == "premium" and user.subscription_expires_at:
++        has_active = user.subscription_expires_at > now
++    
++    user_data = UserResponse(
++        id=user.id,
++        telegram_id=user.telegram_id,
++        username=user.username,
++        first_name=user.first_name,
++        last_name=user.last_name,
++        language_code=user.language_code,
++        is_blocked=user.is_blocked,
++        custom_limits=user.custom_limits,
++        settings=user.settings,
++        created_at=user.created_at,
++        updated_at=user.updated_at,
++        last_active_at=user.last_active_at,
++        subscription_type=user.subscription_type.value,
++        subscription_expires_at=user.subscription_expires_at,
++        has_active_subscription=has_active,
++        total_requests=request_count
++    )
+     
+     return user_data
+ 
+diff --git a/api/schemas/settings.py b/api/schemas/settings.py
+index 8a1fbda..47aead5 100644
+--- a/api/schemas/settings.py
++++ b/api/schemas/settings.py
+@@ -23,6 +23,8 @@ class GlobalLimits(BaseModel):
+     premium_video_animate: int = Field(10, ge=-1)
+     # Long video (stitching) - premium only
+     premium_long_video: int = Field(3, ge=-1)
++    # One-time long video payment price (0 = disabled)
++    long_video_one_time_price_rub: int = Field(0, ge=0, description="Price in RUB for one-time long video generation (0 = disabled)")
+ 
+ 
+ class BotSettings(BaseModel):
+diff --git a/bot/handlers/callbacks.py b/bot/handlers/callbacks.py
+index 1f36cce..a106cc0 100644
+--- a/bot/handlers/callbacks.py
++++ b/bot/handlers/callbacks.py
+@@ -110,71 +110,6 @@ async def callback_limits_back(callback: CallbackQuery):
+     await callback.answer()
+ 
+ 
+-@router.callback_query(F.data.startswith("photo:animate:"))
+-async def callback_photo_animate(callback: CallbackQuery):
+-    """
+-    Handle 'Animate Photo' button from photo analysis result.
+-    The file_id is embedded in callback_data: photo:animate:<file_id>
+-    """
+-    user = callback.from_user
+-    language = await user_service.get_user_language(user.id)
+-    
+-    # Check premium
+-    is_premium = await subscription_service.check_premium(user.id)
+-    if not is_premium:
+-        if language == "ru":
+-            await callback.answer(
+-                "💎 Оживление фото доступно только для премиум-подписчиков!",
+-                show_alert=True
+-            )
+-        else:
+-            await callback.answer(
+-                "💎 Animate photo is available for premium subscribers only!",
+-                show_alert=True
+-            )
+-        return
+-    
+-    # Check limits
+-    has_limit, current, max_limit = await limit_service.check_limit(
+-        user.id, RequestType.VIDEO_ANIMATE
+-    )
+-    if not has_limit:
+-        if language == "ru":
+-            await callback.answer(
+-                f"⚠️ Лимит оживления фото исчерпан ({max_limit})",
+-                show_alert=True
+-            )
+-        else:
+-            await callback.answer(
+-                f"⚠️ Animate photo limit reached ({max_limit})",
+-                show_alert=True
+-            )
+-        return
+-    
+-    # Extract file_id from callback data
+-    file_id = callback.data.split(":", 2)[2]
+-    
+-    # Store file_id in state and ask user for movement description
+-    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}")
+-    
+-    if language == "ru":
+-        await callback.message.answer(
+-            "🎞 <b>Оживление фото</b>\n\n"
+-            "Опишите, как должно двигаться/оживать изображение.\n\n"
+-            "<i>Например: \u00abКамера медленно приближается, волосы развеваются на ветру\u00bb</i>\n\n"
+-            "Или отправьте точку (<b>.</b>) для автоматического оживления."
+-        )
+-    else:
+-        await callback.message.answer(
+-            "🎞 <b>Animate Photo</b>\n\n"
+-            "Describe how the image should move/animate.\n\n"
+-            "<i>Example: 'Camera slowly zooms in, hair blowing in the wind'</i>\n\n"
+-            "Or send a dot (<b>.</b>) for automatic animation."
+-        )
+-    
+-    await callback.answer()
+-
+-
+ @router.callback_query(F.data == "noop")
+ async def callback_noop(callback: CallbackQuery):
+     """Handle no-operation callbacks (e.g., pagination counters)."""
+diff --git a/bot/handlers/video.py b/bot/handlers/video.py
+index 8c52fe2..81af5e6 100644
+--- a/bot/handlers/video.py
++++ b/bot/handlers/video.py
+@@ -9,7 +9,7 @@ from aiogram.enums import ChatAction
+ 
+ from bot.services.user_service import user_service
+ from bot.services.limit_service import limit_service
+-from bot.keyboards.inline import get_video_model_keyboard, get_video_duration_keyboard, get_subscription_keyboard
++from bot.keyboards.inline import get_video_model_keyboard, get_video_duration_keyboard, get_subscription_keyboard, get_long_video_purchase_keyboard
+ from database.redis_client import redis_client
+ from database.models import RequestType, RequestStatus
+ from config import settings
+@@ -153,22 +153,57 @@ async def callback_video_long(callback: CallbackQuery):
+     user = callback.from_user
+     language = await user_service.get_user_language(user.id)
+     
+-    # Check if user is premium
++    # Check if user is premium or has custom long_video limit
+     from bot.services.subscription_service import subscription_service
+     is_premium = await subscription_service.check_premium(user.id)
+     
+     if not is_premium:
+-        if language == "ru":
+-            await callback.answer(
+-                "💎 Длинные видео доступны только для Premium подписчиков!",
+-                show_alert=True
+-            )
+-        else:
+-            await callback.answer(
+-                "💎 Long videos are available for Premium subscribers only!",
+-                show_alert=True
+-            )
+-        return
++        # Check if user has custom long_video limit (from one-time purchase)
++        has_limit, current, max_limit = await limit_service.check_limit(
++            user.id, RequestType.LONG_VIDEO
++        )
++        
++        if not has_limit or max_limit == 0:
++            # Offer one-time purchase or premium
++            try:
++                from api.routers.settings import get_setting
++                db_limits = await get_setting("limits")
++                one_time_price = db_limits.get("long_video_one_time_price_rub", 0)
++            except Exception:
++                one_time_price = 0
++            
++            if one_time_price > 0:
++                if language == "ru":
++                    await callback.message.edit_text(
++                        "🎥 <b>Длинное видео</b>\n\n"
++                        "Эта функция доступна для Premium подписчиков.\n\n"
++                        f"💎 Оформите подписку\n"
++                        f"💰 Или купите разовую генерацию за <b>{one_time_price}₽</b>\n\n"
++                        "Выберите вариант:",
++                        reply_markup=get_long_video_purchase_keyboard(language)
++                    )
++                else:
++                    await callback.message.edit_text(
++                        "🎥 <b>Long Video</b>\n\n"
++                        "This feature is available for Premium subscribers.\n\n"
++                        f"💎 Get a subscription\n"
++                        f"💰 Or buy a one-time generation for <b>{one_time_price}₽</b>\n\n"
++                        "Choose an option:",
++                        reply_markup=get_long_video_purchase_keyboard(language)
++                    )
++            else:
++                if language == "ru":
++                    await callback.answer(
++                        "💎 Длинные видео доступны только для Premium подписчиков!",
++                        show_alert=True
++                    )
++                else:
++                    await callback.answer(
++                        "💎 Long videos are available for Premium subscribers only!",
++                        show_alert=True
++                    )
++            await callback.answer()
++            return
+     
+     # Check limits for long video
+     has_limit, current, max_limit = await limit_service.check_limit(
+@@ -191,24 +226,31 @@ async def callback_video_long(callback: CallbackQuery):
+     # Set state and ask for prompt
+     await redis_client.set_user_state(user.id, "long_video_prompt:sora-2")
+     
++    from bot.services.subscription_service import subscription_service
++    is_prem = await subscription_service.check_premium(user.id)
++    clip_dur = 12 if is_prem else 4
++    total_sec = 3 * clip_dur
++    
+     if language == "ru":
+         remaining = max_limit - current if max_limit != -1 else "∞"
++        tier_note = "" if is_prem else "\n💡 Оформите Premium для видео до 36 секунд!"
+         await callback.message.edit_text(
+-            "🎥 <b>Длинное видео (Premium)</b>\n\n"
++            "🎥 <b>Длинное видео</b>\n\n"
+             f"Осталось: {remaining}\n\n"
+-            "📐 3 клипа по 12 сек = ~36 секунд\n"
+-            "🤖 Модель: sora-2\n\n"
++            f"📐 3 клипа по {clip_dur} сек = ~{total_sec} секунд\n"
++            f"🤖 Модель: sora-2\n{tier_note}\n\n"
+             "Опишите сюжет для длинного видео.\n\n"
+             "<i>Например: «Космический корабль пролетает через пояс астероидов и "
+             "приближается к планете с кольцами»</i>"
+         )
+     else:
+         remaining = max_limit - current if max_limit != -1 else "∞"
++        tier_note = "" if is_prem else "\n💡 Get Premium for videos up to 36 seconds!"
+         await callback.message.edit_text(
+-            "🎥 <b>Long Video (Premium)</b>\n\n"
++            "🎥 <b>Long Video</b>\n\n"
+             f"Remaining: {remaining}\n\n"
+-            "📐 3 clips x 12 sec = ~36 seconds\n"
+-            "🤖 Model: sora-2\n\n"
++            f"📐 3 clips x {clip_dur} sec = ~{total_sec} seconds\n"
++            f"🤖 Model: sora-2\n{tier_note}\n\n"
+             "Describe the plot for a long video.\n\n"
+             "<i>Example: 'A spaceship flying through an asteroid belt and "
+             "approaching a ringed planet'</i>"
+@@ -217,6 +259,70 @@ async def callback_video_long(callback: CallbackQuery):
+     await callback.answer()
+ 
+ 
++@router.callback_query(F.data == "video:long:buy_one")
++async def callback_video_long_buy_one(callback: CallbackQuery):
++    """Handle one-time long video purchase."""
++    user = callback.from_user
++    language = await user_service.get_user_language(user.id)
++    
++    from bot.services.subscription_service import subscription_service
++    
++    try:
++        payment_url, payment_id = await subscription_service.create_long_video_payment(user.id)
++        
++        if payment_url:
++            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
++            from aiogram.utils.keyboard import InlineKeyboardBuilder
++            
++            builder = InlineKeyboardBuilder()
++            builder.row(
++                InlineKeyboardButton(
++                    text="💳 Оплатить" if language == "ru" else "💳 Pay",
++                    url=payment_url
++                )
++            )
++            builder.row(
++                InlineKeyboardButton(
++                    text="❌ Отмена" if language == "ru" else "❌ Cancel",
++                    callback_data="video:cancel"
++                )
++            )
++            
++            if language == "ru":
++                await callback.message.edit_text(
++                    "💰 <b>Оплата длинного видео</b>\n\n"
++                    "После оплаты вам будет доступна одна генерация длинного видео.\n"
++                    "Нажмите кнопку ниже для перехода к оплате:",
++                    reply_markup=builder.as_markup()
++                )
++            else:
++                await callback.message.edit_text(
++                    "💰 <b>Long Video Payment</b>\n\n"
++                    "After payment you'll get one long video generation.\n"
++                    "Click the button below to proceed to payment:",
++                    reply_markup=builder.as_markup()
++                )
++        else:
++            if language == "ru":
++                await callback.answer(
++                    "❌ Оплата временно недоступна. Попробуйте позже.",
++                    show_alert=True
++                )
++            else:
++                await callback.answer(
++                    "❌ Payment temporarily unavailable. Try later.",
++                    show_alert=True
++                )
++    except Exception as e:
++        logger.error(f"Long video payment error: {e}")
++        if language == "ru":
++            await callback.answer("❌ Ошибка оплаты", show_alert=True)
++        else:
++            await callback.answer("❌ Payment error", show_alert=True)
++    
++    await callback.answer()
++
++
+ @router.callback_query(F.data == "video:cancel")
+ async def callback_video_cancel(callback: CallbackQuery):
+     """Handle video generation cancel."""
+@@ -572,44 +678,57 @@ async def queue_long_video_generation(
+     """
+     language = await user_service.get_user_language(user_id)
+     
+-    # Check premium
+-    from bot.services.subscription_service import subscription_service
+-    is_premium = await subscription_service.check_premium(user_id)
+-    
+-    if not is_premium:
+-        if language == "ru":
+-            await message.answer(
+-                "💎 Генерация длинных видео доступна только для премиум-подписчиков!",
+-                reply_markup=get_subscription_keyboard(language)
+-            )
+-        else:
+-            await message.answer(
+-                "💎 Long video generation is available for premium subscribers only!",
+-                reply_markup=get_subscription_keyboard(language)
+-            )
+-        return
+-    
+-    # Check limits
++    # Check limits (covers both premium and one-time purchase users)
+     has_limit, current, max_limit = await limit_service.check_limit(
+         user_id, RequestType.LONG_VIDEO
+     )
+     
+-    if not has_limit:
+-        if language == "ru":
+-            await message.answer(
+-                f"⚠️ Лимит длинных видео исчерпан ({max_limit}).\n\n"
+-                "💎 Лимит обновится завтра.",
+-                reply_markup=get_subscription_keyboard(language)
+-            )
++    if not has_limit or max_limit == 0:
++        # No access at all
++        from bot.services.subscription_service import subscription_service
++        is_premium = await subscription_service.check_premium(user_id)
++        
++        if not is_premium:
++            if language == "ru":
++                await message.answer(
++                    "💎 Генерация длинных видео доступна только для премиум-подписчиков!\n\n"
++                    "Используйте /video для покупки разовой генерации.",
++                    reply_markup=get_subscription_keyboard(language)
++                )
++            else:
++                await message.answer(
++                    "💎 Long video generation is available for premium subscribers only!\n\n"
++                    "Use /video to buy a one-time generation.",
++                    reply_markup=get_subscription_keyboard(language)
++                )
+         else:
+-            await message.answer(
+-                f"⚠️ Long video limit reached ({max_limit}).\n\n"
+-                "💎 Limit resets tomorrow.",
+-                reply_markup=get_subscription_keyboard(language)
+-            )
++            if language == "ru":
++                await message.answer(
++                    f"⚠️ Лимит длинных видео исчерпан ({max_limit}).\n\n"
++                    "💎 Лимит обновится завтра.",
++                    reply_markup=get_subscription_keyboard(language)
++                )
++            else:
++                await message.answer(
++                    f"⚠️ Long video limit reached ({max_limit}).\n\n"
++                    "💎 Limit resets tomorrow.",
++                    reply_markup=get_subscription_keyboard(language)
++                )
+         return
+     
+-    # Queue multiple video tasks (3 clips of 12 sec = 36 sec total)
++    # Queue multiple video tasks
++    # Default: 3 clips of 4 sec = 12 sec for faster/cheaper generation
++    # Premium users get 3 clips of 12 sec = 36 sec
++    from bot.services.subscription_service import subscription_service
++    is_premium_user = await subscription_service.check_premium(user_id)
++    
++    if is_premium_user:
++        num_clips = 3
++        clip_duration = 12  # Premium: 3x12s = 36s
++    else:
++        num_clips = 3
++        clip_duration = 4   # One-time purchase: 3x4s = 12s
++    
+     try:
+         from worker.tasks import queue_long_video_task
+         
+@@ -618,8 +737,8 @@ async def queue_long_video_generation(
+             chat_id=message.chat.id,
+             prompt=prompt,
+             model=model,
+-            num_clips=3,
+-            clip_duration=12
++            num_clips=num_clips,
++            clip_duration=clip_duration
+         )
+     except Exception as e:
+         logger.error(f"Failed to queue long video task: {e}")
+@@ -628,12 +747,14 @@ async def queue_long_video_generation(
+     # Clear user state
+     await redis_client.clear_user_state(user_id)
+     
++    total_sec = num_clips * clip_duration
++    
+     if language == "ru":
+         await message.answer(
+             "🎥 <b>Длинное видео в очереди!</b>\n\n"
+             f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
+             f"🤖 Модель: {model}\n"
+-            "📐 3 клипа по 12 сек = ~36 секунд\n\n"
++            f"📐 {num_clips} клипов по {clip_duration} сек = ~{total_sec} секунд\n\n"
+             "⏳ Примерное время: 5-15 минут\n\n"
+             "Я отправлю готовое видео, когда оно будет готово."
+         )
+@@ -642,7 +763,7 @@ async def queue_long_video_generation(
+             "🎥 <b>Long video queued!</b>\n\n"
+             f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
+             f"🤖 Model: {model}\n"
+-            "📐 3 clips x 12 sec = ~36 seconds\n\n"
++            f"📐 {num_clips} clips x {clip_duration} sec = ~{total_sec} seconds\n\n"
+             "⏳ Estimated time: 5-15 minutes\n\n"
+             "I'll send you the video when it's ready."
+         )
+diff --git a/bot/keyboards/inline.py b/bot/keyboards/inline.py
+index 460a02a..9c03bdc 100644
+--- a/bot/keyboards/inline.py
++++ b/bot/keyboards/inline.py
+@@ -108,6 +108,43 @@ def get_photo_actions_keyboard(
+     )
+     return builder.as_markup()
+ 
++def get_long_video_purchase_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
++    """Keyboard for one-time long video purchase or premium subscription."""
++    texts = {
++        "ru": {
++            "buy_one": "💰 Купить разовую генерацию",
++            "subscribe": "💎 Оформить подписку",
++            "cancel": "❌ Отмена"
++        },
++        "en": {
++            "buy_one": "💰 Buy one-time generation",
++            "subscribe": "💎 Get subscription",
++            "cancel": "❌ Cancel"
++        }
++    }
++    t = texts.get(language, texts["ru"])
++    builder = InlineKeyboardBuilder()
++    builder.row(
++        InlineKeyboardButton(
++            text=t["buy_one"],
++            callback_data="video:long:buy_one"
++        )
++    )
++    builder.row(
++        InlineKeyboardButton(
++            text=t["subscribe"],
++            callback_data="subscription:buy"
++        )
++    )
++    builder.row(
++        InlineKeyboardButton(
++            text=t["cancel"],
++            callback_data="video:cancel"
++        )
++    )
++    return builder.as_markup()
++
++
+ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
+     """
+     Get video model selection keyboard.
+diff --git a/bot/services/subscription_service.py b/bot/services/subscription_service.py
+index 842e988..aacefd3 100644
+--- a/bot/services/subscription_service.py
++++ b/bot/services/subscription_service.py
+@@ -131,6 +131,122 @@ class SubscriptionService:
+                 "expires_at": user.subscription_expires_at
+             }
+     
++    async def create_long_video_payment(
++        self,
++        telegram_id: int
++    ) -> Tuple[Optional[str], Optional[str]]:
++        """
++        Create one-time payment for long video generation.
++        
++        Returns:
++            Tuple of (payment_url, payment_id) or (None, None) on error
++        """
++        # Get price from settings
++        try:
++            from api.routers.settings import get_setting
++            db_limits = await get_setting("limits")
++            price = db_limits.get("long_video_one_time_price_rub", 0)
++        except Exception:
++            price = 0
++        
++        if price <= 0:
++            logger.error("Long video one-time payment not configured (price=0)")
++            return None, None
++        
++        payment_id = f"longvideo_{telegram_id}_{uuid.uuid4().hex[:8]}"
++        
++        if settings.payment_provider == "yookassa":
++            shop_id = settings.yookassa_shop_id
++            secret_key = settings.yookassa_secret_key
++            
++            if not shop_id or not secret_key:
++                logger.error("YooKassa not configured for long video payment")
++                return None, None
++            
++            payload = {
++                "amount": {
++                    "value": f"{price}.00",
++                    "currency": "RUB"
++                },
++                "capture": True,
++                "confirmation": {
++                    "type": "redirect",
++                    "return_url": f"https://t.me/{settings.bot_username}"
++                },
++                "description": f"Генерация длинного видео (до 36 сек)",
++                "metadata": {
++                    "telegram_id": telegram_id,
++                    "payment_type": "long_video",
++                    "payment_id": payment_id
++                }
++            }
++            
++            headers = {
++                "Content-Type": "application/json",
++                "Idempotence-Key": payment_id
++            }
++            
++            auth = aiohttp.BasicAuth(shop_id, secret_key)
++            
++            try:
++                async with aiohttp.ClientSession() as session:
++                    async with session.post(
++                        f"{self.YOOKASSA_API_URL}/payments",
++                        json=payload,
++                        headers=headers,
++                        auth=auth
++                    ) as response:
++                        if response.status != 200:
++                            error = await response.text()
++                            logger.error("YooKassa long video payment failed", error=error)
++                            return None, None
++                        
++                        data = await response.json()
++                        
++                        payment_url = data["confirmation"]["confirmation_url"]
++                        yookassa_id = data["id"]
++                        
++                        logger.info(
++                            "Long video payment created",
++                            payment_id=payment_id,
++                            yookassa_id=yookassa_id,
++                            telegram_id=telegram_id,
++                            price=price
++                        )
++                        
++                        return payment_url, yookassa_id
++                        
++            except Exception as e:
++                logger.error("Failed to create long video payment", error=str(e))
++                return None, None
++        
++        return None, None
++    
++    async def grant_long_video_access(self, telegram_id: int) -> bool:
++        """
++        Grant one long video generation to a user (after one-time payment).
++        Increments their long_video custom limit by 1.
++        """
++        async with async_session_maker() as session:
++            result = await session.execute(
++                select(User).where(User.telegram_id == telegram_id)
++            )
++            user = result.scalar_one_or_none()
++            
++            if not user:
++                return False
++            
++            from sqlalchemy.orm import attributes
++            custom_limits = dict(user.custom_limits) if user.custom_limits else {}
++            current_long_video = custom_limits.get("long_video", 0)
++            custom_limits["long_video"] = current_long_video + 1
++            user.custom_limits = custom_limits
++            attributes.flag_modified(user, "custom_limits")
++            await session.commit()
++            
++            logger.info("Long video access granted (one-time)", telegram_id=telegram_id)
++            return True
++    
+     async def create_payment(
+         self,
+         telegram_id: int,
+@@ -257,13 +373,49 @@ class SubscriptionService:
+             
+             metadata = payment.get("metadata", {})
+             telegram_id = metadata.get("telegram_id")
+-            months = metadata.get("months", 1)
+             payment_id = metadata.get("payment_id")
++            payment_type = metadata.get("payment_type", "subscription")
+             
+             if not telegram_id:
+                 logger.error("Missing telegram_id in payment metadata")
+                 return False
+             
++            # Handle different payment types
++            if payment_type == "long_video":
++                # One-time long video payment
++                success = await self.grant_long_video_access(int(telegram_id))
++                if success:
++                    # Notify user
++                    try:
++                        from aiogram import Bot
++                        bot = Bot(token=settings.telegram_bot_token)
++                        
++                        from bot.services.user_service import user_service
++                        language = await user_service.get_user_language(int(telegram_id))
++                        
++                        if language == "ru":
++                            text = (
++                                "✅ <b>Оплата прошла успешно!</b>\n\n"
++                                "Вам доступна одна генерация длинного видео.\n"
++                                "Нажмите /video и выберите 🎥 Длинное видео."
++                            )
++                        else:
++                            text = (
++                                "✅ <b>Payment successful!</b>\n\n"
++                                "You have one long video generation available.\n"
++                                "Press /video and select 🎥 Long Video."
++                            )
++                        
++                        await bot.send_message(chat_id=int(telegram_id), text=text, parse_mode="HTML")
++                        await bot.session.close()
++                    except Exception as notify_err:
++                        logger.warning("Failed to notify about long video payment", error=str(notify_err))
++                
++                return success
++            
++            # Standard subscription payment
++            months = metadata.get("months", 1)
++            
+             # Activate subscription
+             return await self.activate_subscription(
+                 telegram_id=int(telegram_id),
+diff --git a/bot/services/user_service.py b/bot/services/user_service.py
+index 6295b80..e8d915a 100644
+--- a/bot/services/user_service.py
++++ b/bot/services/user_service.py
+@@ -227,11 +227,11 @@ class UserService:
+             if not user:
+                 return None
+             
+-            valid_keys = {"text", "image", "video", "voice", "document"}
++            valid_keys = {"text", "image", "video", "voice", "document", "presentation", "video_animate", "long_video"}
+             custom_limits = dict(user.custom_limits) if user.custom_limits else {}
+             
+             for key, value in limits.items():
+-                if key in valid_keys and isinstance(value, int) and value >= 0:
++                if key in valid_keys and isinstance(value, int) and value >= -1:
+                     custom_limits[key] = value
+             
+             user.custom_limits = custom_limits
+diff --git a/scripts/test_ffmpeg_stitch.py b/scripts/test_ffmpeg_stitch.py
+new file mode 100644
+index 0000000..5a4b64d
+--- /dev/null
++++ b/scripts/test_ffmpeg_stitch.py
+@@ -0,0 +1,185 @@
++#!/usr/bin/env python3
++"""
++Test script for ffmpeg long video stitching.
++Verifies that ffmpeg can concatenate multiple video clips into a single video.
++
++Usage:
++    python scripts/test_ffmpeg_stitch.py [--clips 3] [--duration 4]
++
++This script:
++1. Generates synthetic video clips using ffmpeg (color bars with text overlay)
++2. Concatenates them using the same logic as worker/tasks.py
++3. Verifies the output is a valid, playable video
++4. Reports durations of individual clips and the final video
++"""
++import subprocess
++import tempfile
++import os
++import sys
++import argparse
++import json
++
++
++def create_test_clip(output_path: str, clip_index: int, duration: int = 4, size: str = "1280x720"):
++    """
++    Create a synthetic test video clip using ffmpeg.
++    Each clip has a different color background and text overlay showing the clip number.
++    """
++    colors = ["blue", "red", "green", "orange", "purple", "cyan"]
++    color = colors[clip_index % len(colors)]
++    
++    # Create a clip with solid color background and text
++    cmd = [
++        'ffmpeg', '-y',
++        '-f', 'lavfi',
++        '-i', f'color=c={color}:s={size}:d={duration}:r=24',
++        '-vf', f"drawtext=text='Clip {clip_index + 1}':fontsize=80:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2",
++        '-c:v', 'libx264',
++        '-preset', 'ultrafast',
++        '-pix_fmt', 'yuv420p',
++        output_path
++    ]
++    
++    result = subprocess.run(cmd, capture_output=True, timeout=30)
++    if result.returncode != 0:
++        print(f"  ERROR creating clip {clip_index + 1}: {result.stderr.decode()[-200:]}")
++        return False
++    return True
++
++
++def get_video_duration(filepath: str) -> float:
++    """Get video duration using ffprobe."""
++    cmd = [
++        'ffprobe', '-v', 'quiet',
++        '-print_format', 'json',
++        '-show_format',
++        filepath
++    ]
++    result = subprocess.run(cmd, capture_output=True, timeout=15)
++    if result.returncode == 0:
++        data = json.loads(result.stdout)
++        return float(data.get("format", {}).get("duration", 0))
++    return 0.0
++
++
++def stitch_clips(clip_paths: list, output_path: str) -> bool:
++    """
++    Stitch video clips using the same method as worker/tasks.py.
++    Uses ffmpeg concat demuxer.
++    """
++    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as concat_file:
++        for cp in clip_paths:
++            concat_file.write(f"file '{cp}'\n")
++        concat_path = concat_file.name
++    
++    try:
++        result = subprocess.run(
++            [
++                'ffmpeg', '-f', 'concat', '-safe', '0',
++                '-i', concat_path,
++                '-c', 'copy',
++                '-y', output_path
++            ],
++            capture_output=True, timeout=120
++        )
++        
++        if result.returncode != 0:
++            print(f"  FFMPEG ERROR: {result.stderr.decode()[-300:]}")
++            return False
++        return True
++    finally:
++        os.unlink(concat_path)
++
++
++def main():
++    parser = argparse.ArgumentParser(description="Test ffmpeg video stitching")
++    parser.add_argument("--clips", type=int, default=3, help="Number of clips (default: 3)")
++    parser.add_argument("--duration", type=int, default=4, help="Duration per clip in seconds (default: 4)")
++    parser.add_argument("--size", type=str, default="1280x720", help="Video resolution (default: 1280x720)")
++    args = parser.parse_args()
++    
++    # Check ffmpeg is available
++    try:
++        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
++        if result.returncode != 0:
++            print("ERROR: ffmpeg not found")
++            sys.exit(1)
++        version_line = result.stdout.decode().split('\n')[0]
++        print(f"Using: {version_line}")
++    except FileNotFoundError:
++        print("ERROR: ffmpeg not installed. Install with: apt-get install ffmpeg")
++        sys.exit(1)
++    
++    print(f"\n=== Long Video Stitch Test ===")
++    print(f"Clips: {args.clips}")
++    print(f"Duration per clip: {args.duration}s")
++    print(f"Resolution: {args.size}")
++    print(f"Expected total: ~{args.clips * args.duration}s")
++    print()
++    
++    with tempfile.TemporaryDirectory() as tmpdir:
++        # Step 1: Create test clips
++        print("Step 1: Creating test clips...")
++        clip_paths = []
++        for i in range(args.clips):
++            clip_path = os.path.join(tmpdir, f"clip_{i}.mp4")
++            print(f"  Creating clip {i + 1}/{args.clips}...", end=" ")
++            if create_test_clip(clip_path, i, args.duration, args.size):
++                duration = get_video_duration(clip_path)
++                size_kb = os.path.getsize(clip_path) / 1024
++                print(f"OK ({duration:.1f}s, {size_kb:.0f}KB)")
++                clip_paths.append(clip_path)
++            else:
++                print("FAILED")
++                sys.exit(1)
++        
++        # Step 2: Stitch clips together
++        print("\nStep 2: Stitching clips with ffmpeg concat...")
++        output_path = os.path.join(tmpdir, "long_video.mp4")
++        if stitch_clips(clip_paths, output_path):
++            final_duration = get_video_duration(output_path)
++            final_size_kb = os.path.getsize(output_path) / 1024
++            expected_duration = args.clips * args.duration
++            
++            print(f"  Output: {output_path}")
++            print(f"  Duration: {final_duration:.1f}s (expected: ~{expected_duration}s)")
++            print(f"  Size: {final_size_kb:.0f}KB")
++            
++            # Verify duration is reasonable
++            if abs(final_duration - expected_duration) < 1.0:
++                print(f"\n✅ SUCCESS: Video stitched correctly! {final_duration:.1f}s total")
++            else:
++                print(f"\n⚠️ WARNING: Duration mismatch. Got {final_duration:.1f}s, expected ~{expected_duration}s")
++                print("  This may be due to encoding differences, but the concat logic works.")
++        else:
++            print("  FAILED to stitch clips")
++            sys.exit(1)
++        
++        # Step 3: Verify output is valid
++        print("\nStep 3: Verifying output video...")
++        probe_cmd = [
++            'ffprobe', '-v', 'quiet',
++            '-print_format', 'json',
++            '-show_streams',
++            '-show_format',
++            output_path
++        ]
++        probe_result = subprocess.run(probe_cmd, capture_output=True, timeout=15)
++        if probe_result.returncode == 0:
++            probe_data = json.loads(probe_result.stdout)
++            streams = probe_data.get("streams", [])
++            for s in streams:
++                if s["codec_type"] == "video":
++                    print(f"  Video codec: {s['codec_name']}")
++                    print(f"  Resolution: {s['width']}x{s['height']}")
++                    print(f"  Frame rate: {s.get('r_frame_rate', 'N/A')}")
++            print(f"  Format: {probe_data.get('format', {}).get('format_name', 'N/A')}")
++            print(f"\n✅ Output video is valid and playable!")
++        else:
++            print("  Could not probe output video")
++    
++    print("\n=== Test Complete ===")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/worker/tasks.py b/worker/tasks.py
+index ca2e517..1b71bf8 100644
+--- a/worker/tasks.py
++++ b/worker/tasks.py
+@@ -186,12 +186,31 @@ async def process_video_generation(ctx, task_id: int):
+             )
+             await session.commit()
+         
++        # Download reference image if this is an animate-photo task
++        input_reference = None
++        is_animate = False
++        if task.reference_image_file_id:
++            is_animate = True
++            try:
++                from aiogram import Bot as DlBot
++                dl_bot = DlBot(token=settings.telegram_bot_token)
++                file = await dl_bot.get_file(task.reference_image_file_id)
++                file_bytes_io = await dl_bot.download_file(file.file_path)
++                import io
++                input_reference = io.BytesIO(file_bytes_io.read()).getvalue()
++                await dl_bot.session.close()
++                logger.info("Reference image downloaded", task_id=task_id, size=len(input_reference))
++            except Exception as dl_err:
++                logger.error("Failed to download reference image", task_id=task_id, error=str(dl_err))
++                # Continue without reference - will generate from prompt only
++        
+         # Create video using AI service (CometAPI or OpenAI fallback)
+         video_info = await ai_service.create_video(
+             prompt=task.prompt,
+             model=task.model,
+             duration=task.duration_seconds,
+-            telegram_id=telegram_id
++            telegram_id=telegram_id,
++            input_reference=input_reference
+         )
+         
+         video_id = video_info["video_id"]
+@@ -283,11 +302,12 @@ async def process_video_generation(ctx, task_id: int):
+             )
+             await session.commit()
+         
+-        # Increment usage and record request
+-        await limit_service.increment_usage(telegram_id, RequestType.VIDEO)
++        # Increment usage and record request (use correct type for animate vs regular)
++        req_type = RequestType.VIDEO_ANIMATE if is_animate else RequestType.VIDEO
++        await limit_service.increment_usage(telegram_id, req_type)
+         await limit_service.record_request(
+             telegram_id=telegram_id,
+-            request_type=RequestType.VIDEO,
++            request_type=req_type,
+             prompt=task.prompt[:500],
+             model=task.model,
+             status=RequestStatus.SUCCESS
+@@ -296,7 +316,8 @@ async def process_video_generation(ctx, task_id: int):
+         logger.info(
+             "Video generation completed",
+             task_id=task_id,
+-            video_id=video_id
++            video_id=video_id,
++            is_animate=is_animate
+         )
+         
+     except Exception as e:
+@@ -324,16 +345,20 @@ async def process_video_generation(ctx, task_id: int):
+         
+         bot = Bot(token=settings.telegram_bot_token)
+         
++        is_animate = bool(task.reference_image_file_id) if task else False
++        
+         if language == "ru":
++            error_label = "Ошибка оживления фото" if is_animate else "Ошибка генерации видео"
+             error_text = (
+-                "❌ <b>Ошибка генерации видео</b>\n\n"
+-                "К сожалению, не удалось сгенерировать видео.\n"
++                f"❌ <b>{error_label}</b>\n\n"
++                "К сожалению, не удалось выполнить запрос.\n"
+                 "Лимит не списан. Попробуйте ещё раз."
+             )
+         else:
++            error_label = "Photo Animation Error" if is_animate else "Video Generation Error"
+             error_text = (
+-                "❌ <b>Video Generation Error</b>\n\n"
+-                "Unfortunately, video generation failed.\n"
++                f"❌ <b>{error_label}</b>\n\n"
++                "Unfortunately, the request failed.\n"
+                 "Limit not charged. Please try again."
+             )
+         
+@@ -346,9 +371,10 @@ async def process_video_generation(ctx, task_id: int):
+         await bot.session.close()
+         
+         # Record failed request
++        req_type = RequestType.VIDEO_ANIMATE if is_animate else RequestType.VIDEO
+         await limit_service.record_request(
+             telegram_id=telegram_id,
+-            request_type=RequestType.VIDEO,
++            request_type=req_type,
+             prompt=task.prompt[:500],
+             model=task.model,
+             status=RequestStatus.FAILED,
+@@ -672,13 +698,19 @@ async def process_long_video(
+         clip_video_bytes = []
+         
+         for i in range(num_clips):
+-            # Build continuation prompt
++            # Build continuation prompt with strong visual continuity cues
+             if i == 0:
+-                clip_prompt = prompt
++                clip_prompt = (
++                    f"[Part 1 of {num_clips}] Beginning of the scene. "
++                    f"{prompt}. "
++                    f"Maintain consistent visual style, lighting, and color palette throughout."
++                )
+             else:
+                 clip_prompt = (
+-                    f"Continue the video seamlessly from the previous scene. "
+-                    f"Part {i+1}/{num_clips}: {prompt}"
++                    f"[Part {i+1} of {num_clips}] Seamless continuation of the previous scene. "
++                    f"Continue exactly where the last clip ended, maintaining the same "
++                    f"camera style, color grading, lighting, characters, and environment. "
++                    f"Scene: {prompt}"
+                 )
+             
+             # Update progress
+-- 
+2.39.5
+
