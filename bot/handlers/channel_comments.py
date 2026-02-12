@@ -130,7 +130,10 @@ async def send_reply(message: Message, text: str, photo: BufferedInputFile = Non
     """
     Send message as reply in groups (for visibility in channel comments).
     In private chats, send normally.
+    Falls back to no parse_mode if Telegram can't parse entities.
     """
+    from aiogram.exceptions import TelegramBadRequest
+
     is_group = message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     thread_id = message.message_thread_id if is_group else None
     reply_to = message.message_id if is_group else None
@@ -143,13 +146,28 @@ async def send_reply(message: Message, text: str, photo: BufferedInputFile = Non
     if parse_mode:
         kwargs["parse_mode"] = parse_mode
 
-    if photo:
-        kwargs["photo"] = photo
-        kwargs["caption"] = text
-        return await message.bot.send_photo(**kwargs)
-    else:
-        kwargs["text"] = text
-        return await message.bot.send_message(**kwargs)
+    try:
+        if photo:
+            kwargs["photo"] = photo
+            kwargs["caption"] = text
+            return await message.bot.send_photo(**kwargs)
+        else:
+            kwargs["text"] = text
+            return await message.bot.send_message(**kwargs)
+    except TelegramBadRequest as e:
+        if "can't parse entities" in str(e):
+            # Explicitly disable parse_mode (overrides bot default)
+            kwargs["parse_mode"] = None
+            logger.warning(
+                "Parse entities failed, retrying without parse_mode",
+                error=str(e),
+                text_preview=text[:50]
+            )
+            if photo:
+                return await message.bot.send_photo(**kwargs)
+            else:
+                return await message.bot.send_message(**kwargs)
+        raise
 
 
 async def _check_user_access(message: Message, bot: Bot) -> tuple:
@@ -357,12 +375,13 @@ async def group_cmd_image(message: Message, bot: Bot):
 
     if not prompt or len(prompt.strip()) < 3:
         if language == "ru":
-            await send_reply(message, "🖼 Используйте: /image <описание картинки>\n\nНапример: /image кот в космосе")
+            await send_reply(message, "🖼 Используйте: /image [описание картинки]\n\nНапример: /image кот в космосе")
         else:
-            await send_reply(message, "🖼 Usage: /image <image description>\n\nExample: /image cat in space")
+            await send_reply(message, "🖼 Usage: /image [image description]\n\nExample: /image cat in space")
         return
 
     await generate_image_response(message, user_id, prompt, language)
+
 
 
 # ============================================
