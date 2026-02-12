@@ -53,25 +53,25 @@ async def cmd_video(message: Message):
         text = (
             "🎬 <b>Генерация видео</b>\n\n"
             f"Осталось сегодня: {max_limit - current} из {max_limit}\n\n"
-            "<b>Модели:</b>\n"
-            "• <b>sora-2</b> — быстрый режим (1-3 мин)\n"
-            "• <b>sora-2-pro</b> — высокое качество (5-10 мин)\n\n"
-            "<b>Длительности:</b> 4, 8 или 12 секунд\n"
+            "<b>Режимы:</b>\n"
+            "• ⚡ <b>Быстрый</b> — 1-3 мин\n"
+            "• 🎬 <b>Высокое качество</b> — 5-10 мин\n\n"
+            "<b>Длительность:</b> 4, 8 или 12 секунд\n"
             "<b>Разрешение:</b> 720x1280\n\n"
             "⚠️ Нельзя создавать реальных людей и копирайтный контент\n\n"
-            "Выберите модель:"
+            "Выберите режим:"
         )
     else:
         text = (
             "🎬 <b>Video Generation</b>\n\n"
             f"Remaining today: {max_limit - current} of {max_limit}\n\n"
-            "<b>Models:</b>\n"
-            "• <b>sora-2</b> — fast mode (1-3 min)\n"
-            "• <b>sora-2-pro</b> — high quality (5-10 min)\n\n"
+            "<b>Modes:</b>\n"
+            "• ⚡ <b>Fast</b> — 1-3 min\n"
+            "• 🎬 <b>High quality</b> — 5-10 min\n\n"
             "<b>Durations:</b> 4, 8 or 12 seconds\n"
             "<b>Resolution:</b> 720x1280\n\n"
             "⚠️ Cannot create real people or copyrighted content\n\n"
-            "Choose a model:"
+            "Choose a mode:"
         )
     
     await message.answer(text, reply_markup=get_video_model_keyboard(language))
@@ -88,15 +88,19 @@ async def callback_video_model(callback: CallbackQuery):
     
     language = await user_service.get_user_language(user.id)
     
+    # Map internal model names to user-friendly labels
+    mode_label_ru = "⚡ Быстрый" if model == "sora-2" else "🎬 Высокое качество"
+    mode_label_en = "⚡ Fast" if model == "sora-2" else "🎬 High quality"
+    
     if language == "ru":
         await callback.message.edit_text(
-            f"🎬 <b>Модель: {model}</b>\n\n"
+            f"🎬 <b>Режим: {mode_label_ru}</b>\n\n"
             "Выберите длительность видео:",
             reply_markup=get_video_duration_keyboard(language, model)
         )
     else:
         await callback.message.edit_text(
-            f"🎬 <b>Model: {model}</b>\n\n"
+            f"🎬 <b>Mode: {mode_label_en}</b>\n\n"
             "Choose video duration:",
             reply_markup=get_video_duration_keyboard(language, model)
         )
@@ -123,10 +127,13 @@ async def callback_video_duration(callback: CallbackQuery):
     
     language = await user_service.get_user_language(user.id)
     
+    mode_label_ru = "⚡ Быстрый" if model == "sora-2" else "🎬 Высокое качество"
+    mode_label_en = "⚡ Fast" if model == "sora-2" else "🎬 High quality"
+    
     if language == "ru":
         await callback.message.edit_text(
             f"🎬 <b>Настройки видео:</b>\n"
-            f"• Модель: {model}\n"
+            f"• Режим: {mode_label_ru}\n"
             f"• Длительность: {duration} сек\n"
             f"• Разрешение: 720x1280\n\n"
             "Теперь опишите видео, которое хотите создать.\n\n"
@@ -136,7 +143,7 @@ async def callback_video_duration(callback: CallbackQuery):
     else:
         await callback.message.edit_text(
             f"🎬 <b>Video settings:</b>\n"
-            f"• Model: {model}\n"
+            f"• Mode: {mode_label_en}\n"
             f"• Duration: {duration} sec\n"
             f"• Resolution: 720x1280\n\n"
             "Now describe the video you want to create.\n\n"
@@ -205,16 +212,17 @@ async def callback_video_long(callback: CallbackQuery):
     # User has access (custom_limits set) — ask for prompt
     await redis_client.set_user_state(user.id, "long_video_prompt:sora-2")
     
-    # Single continuous video: 1 clip at max duration
+    # 3 clips x 12s stitched into one continuous ~36s video
+    num_clips = 3
     clip_dur = 12
+    total_dur = num_clips * clip_dur
     remaining = max_limit - current if max_limit != -1 else "∞"
     
     if language == "ru":
         await callback.message.edit_text(
             "🎥 <b>Длинное видео</b>\n\n"
             f"Осталось: {remaining}\n\n"
-            f"📐 Генерация: 1 видео ~{clip_dur} секунд\n"
-            "🤖 Модель: sora-2\n\n"
+            f"📐 Генерация: ~{total_dur} секунд (единое видео)\n\n"
             "Опишите сюжет для длинного видео.\n\n"
             "<i>Например: «Космический корабль пролетает через пояс астероидов и "
             "приближается к планете с кольцами»</i>"
@@ -223,8 +231,7 @@ async def callback_video_long(callback: CallbackQuery):
         await callback.message.edit_text(
             "🎥 <b>Long Video</b>\n\n"
             f"Remaining: {remaining}\n\n"
-            f"📐 Generation: 1 video ~{clip_dur} seconds\n"
-            "🤖 Model: sora-2\n\n"
+            f"📐 Generation: ~{total_dur} seconds (single video)\n\n"
             "Describe the plot for a long video.\n\n"
             "<i>Example: 'A spaceship flying through an asteroid belt and "
             "approaching a ringed planet'</i>"
@@ -466,12 +473,15 @@ async def queue_video_generation(
     else:  # sora-2-pro
         time_estimate = "5-10 минут" if language == "ru" else "5-10 minutes"
     
+    mode_label_ru = "⚡ Быстрый" if model == "sora-2" else "🎬 Высокое качество"
+    mode_label_en = "⚡ Fast" if model == "sora-2" else "🎬 High quality"
+    
     if language == "ru":
         await message.answer(
             "🎬 <b>Видео поставлено в очередь!</b>\n\n"
             f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Модель: {model}\n"
-            f"⏱ Длительность: {duration} сек\n\n"
+            f"⏱ Длительность: {duration} сек\n"
+            f"🎬 Режим: {mode_label_ru}\n\n"
             f"⏳ Примерное время: {time_estimate}\n\n"
             "Я отправлю готовое видео, когда оно будет готово."
         )
@@ -479,8 +489,8 @@ async def queue_video_generation(
         await message.answer(
             "🎬 <b>Video queued!</b>\n\n"
             f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Model: {model}\n"
-            f"⏱ Duration: {duration} sec\n\n"
+            f"⏱ Duration: {duration} sec\n"
+            f"🎬 Mode: {mode_label_en}\n\n"
             f"⏳ Estimated time: {time_estimate}\n\n"
             "I'll send you the video when it's ready."
         )
@@ -649,7 +659,7 @@ async def queue_long_video_generation(
     """
     Queue long video generation.
     Access via one-time payment or custom_limits only (NOT included in premium).
-    Generates a single continuous video (1 clip x 12s) instead of multiple clips.
+    Generates a single continuous video by stitching 3 x 12s clips via ffmpeg (~36s).
     """
     language = await user_service.get_user_language(user_id)
     
@@ -671,8 +681,8 @@ async def queue_long_video_generation(
             )
         return
     
-    # Generate a single continuous video (1 clip x 12 sec)
-    num_clips = 1
+    # Generate 3 clips x 12s, stitched into one continuous ~36s video
+    num_clips = 3
     clip_duration = 12
     
     try:
@@ -699,18 +709,16 @@ async def queue_long_video_generation(
         await message.answer(
             "🎥 <b>Длинное видео в очереди!</b>\n\n"
             f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Модель: {model}\n"
-            f"📐 1 видео ~{total_sec} секунд\n\n"
-            "⏳ Примерное время: 3-10 минут\n\n"
+            f"📐 ~{total_sec} секунд (единое видео)\n\n"
+            "⏳ Примерное время: 5-15 минут\n\n"
             "Я отправлю готовое видео, когда оно будет готово."
         )
     else:
         await message.answer(
             "🎥 <b>Long video queued!</b>\n\n"
             f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
-            f"🤖 Model: {model}\n"
-            f"📐 1 video ~{total_sec} seconds\n\n"
-            "⏳ Estimated time: 3-10 minutes\n\n"
+            f"📐 ~{total_sec} seconds (single video)\n\n"
+            "⏳ Estimated time: 5-15 minutes\n\n"
             "I'll send you the video when it's ready."
         )
     

@@ -1325,8 +1325,8 @@ async def analyze_document_response(
         file_bytes = await message.bot.download_file(file.file_path)
         file_data = file_bytes.read() if hasattr(file_bytes, 'read') else file_bytes
 
-        # Extract text from document
-        content, images = await document_service.process_document(file_data, filename)
+        # Extract text from document (returns 3 values: text, metadata, images)
+        content, _metadata, images = await document_service.process_document(file_data, filename)
 
         if not content and not images:
             try:

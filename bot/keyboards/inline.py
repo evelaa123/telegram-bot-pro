@@ -146,15 +146,15 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """
     texts = {
         "ru": {
-            "sora2": "⚡ Быстрый (sora-2)",
-            "sora2_pro": "🎬 Качество (sora-2-pro)",
-            "long_video": "🎥 Длинное видео (💰 Разовый платёж)",
+            "sora2": "⚡ Быстрый режим (1-3 мин)",
+            "sora2_pro": "🎬 Высокое качество (5-10 мин)",
+            "long_video": "🎥 Длинное видео ~36с (💰 Разовый платёж)",
             "cancel": "❌ Отмена"
         },
         "en": {
-            "sora2": "⚡ Fast (sora-2)",
-            "sora2_pro": "🎬 Quality (sora-2-pro)",
-            "long_video": "🎥 Long Video (💰 One-time)",
+            "sora2": "⚡ Fast mode (1-3 min)",
+            "sora2_pro": "🎬 High quality (5-10 min)",
+            "long_video": "🎥 Long Video ~36s (💰 One-time)",
             "cancel": "❌ Cancel"
         }
     }
