@@ -282,6 +282,79 @@ async def reset_user_limits(
     return {"message": "Limits reset to defaults"}
 
 
+@router.post("/{telegram_id}/refresh-limits")
+async def refresh_user_limits(
+    telegram_id: int,
+    current_admin: Admin = Depends(require_role(["superadmin", "admin"]))
+):
+    """
+    Force refresh user limits after admin changes.
+    
+    Resets today's daily usage counters so admin-updated limits
+    take effect immediately. Also notifies the user via bot.
+    """
+    from bot.services.limit_service import limit_service as ls
+    
+    user = await user_service.get_user_by_telegram_id(telegram_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Reset daily counters
+    reset_ok = await ls.reset_user_limits(telegram_id)
+    
+    # Fetch new limits to return
+    new_limits = await ls.get_user_limits(telegram_id)
+    
+    # Notify user via Telegram
+    try:
+        from aiogram import Bot
+        bot = Bot(token=settings.telegram_bot_token)
+        
+        language = "ru"
+        try:
+            language = await user_service.get_user_language(telegram_id)
+        except Exception:
+            pass
+        
+        if language == "ru":
+            notify_text = (
+                "🔄 <b>Лимиты обновлены!</b>\n\n"
+                "Администратор обновил ваши лимиты.\n"
+                "Используйте /limits чтобы увидеть актуальные значения."
+            )
+        else:
+            notify_text = (
+                "🔄 <b>Limits refreshed!</b>\n\n"
+                "An administrator has updated your limits.\n"
+                "Use /limits to see the current values."
+            )
+        
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=notify_text,
+            parse_mode="HTML"
+        )
+        await bot.session.close()
+    except Exception as notify_err:
+        logger.warning("Failed to notify user about limits refresh", error=str(notify_err))
+    
+    logger.info(
+        "User limits force-refreshed",
+        telegram_id=telegram_id,
+        admin=current_admin.username,
+        reset_counters=reset_ok,
+    )
+    
+    return {
+        "message": "Limits refreshed successfully",
+        "counters_reset": reset_ok,
+        "current_limits": new_limits
+    }
+
+
 @router.post("/{telegram_id}/premium")
 async def grant_premium(
     telegram_id: int,

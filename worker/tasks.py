@@ -695,11 +695,19 @@ async def process_long_video(
             )
         
         # Generate clips sequentially with continuation prompts
+        # When num_clips=1, generate a single continuous video (no stitching needed)
         clip_video_bytes = []
         
         for i in range(num_clips):
-            # Build continuation prompt with strong visual continuity cues
-            if i == 0:
+            # Build prompt
+            if num_clips == 1:
+                # Single continuous video — use prompt directly with quality cues
+                clip_prompt = (
+                    f"{prompt}. "
+                    f"Create a single smooth continuous video with consistent visual style, "
+                    f"lighting, and color palette."
+                )
+            elif i == 0:
                 clip_prompt = (
                     f"[Part 1 of {num_clips}] Beginning of the scene. "
                     f"{prompt}. "
@@ -768,100 +776,8 @@ async def process_long_video(
             
             logger.info(f"Clip {i+1}/{num_clips} completed", task_id=task_id)
         
-        # Try to concatenate clips with ffmpeg, fallback to sending individually
-        try:
-            import subprocess
-            import tempfile
-            import os
-            
-            with tempfile.TemporaryDirectory() as tmpdir:
-                # Write clips to files
-                clip_paths = []
-                for idx, clip_bytes in enumerate(clip_video_bytes):
-                    clip_path = os.path.join(tmpdir, f"clip_{idx}.mp4")
-                    with open(clip_path, 'wb') as f:
-                        f.write(clip_bytes)
-                    clip_paths.append(clip_path)
-                
-                # Create concat file
-                concat_file = os.path.join(tmpdir, "concat.txt")
-                with open(concat_file, 'w') as f:
-                    for cp in clip_paths:
-                        f.write(f"file '{cp}'\n")
-                
-                # Concatenate with ffmpeg
-                output_path = os.path.join(tmpdir, "long_video.mp4")
-                result = subprocess.run(
-                    [
-                        'ffmpeg', '-f', 'concat', '-safe', '0',
-                        '-i', concat_file,
-                        '-c', 'copy',
-                        '-y', output_path
-                    ],
-                    capture_output=True, timeout=120
-                )
-                
-                if result.returncode == 0 and os.path.exists(output_path):
-                    with open(output_path, 'rb') as f:
-                        final_video = f.read()
-                    
-                    # Delete progress message
-                    try:
-                        await bot.delete_message(
-                            chat_id=task.chat_id,
-                            message_id=progress_msg.message_id
-                        )
-                    except Exception:
-                        pass
-                    
-                    # Send single concatenated video
-                    video_file = BufferedInputFile(
-                        final_video,
-                        filename=f"long_video_{task_id}.mp4"
-                    )
-                    
-                    prompt_preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
-                    if language == "ru":
-                        caption = (
-                            f"🎥 <b>Длинное видео готово!</b>\n\n"
-                            f"📝 {prompt_preview}\n"
-                            f"📐 {num_clips} клипов = ~{num_clips * clip_duration} сек"
-                        )
-                    else:
-                        caption = (
-                            f"🎥 <b>Long video ready!</b>\n\n"
-                            f"📝 {prompt_preview}\n"
-                            f"📐 {num_clips} clips = ~{num_clips * clip_duration} sec"
-                        )
-                    
-                    sent_message = await bot.send_video(
-                        chat_id=task.chat_id,
-                        video=video_file,
-                        caption=caption,
-                        parse_mode="HTML",
-                        supports_streaming=True
-                    )
-                    
-                    # Update task as completed
-                    async with async_session_maker() as session:
-                        await session.execute(
-                            update(VideoTask)
-                            .where(VideoTask.id == task_id)
-                            .values(
-                                status=VideoTaskStatus.COMPLETED,
-                                progress=100,
-                                completed_at=datetime.utcnow(),
-                                result_file_id=sent_message.video.file_id
-                            )
-                        )
-                        await session.commit()
-                else:
-                    raise Exception("ffmpeg concat failed")
-                
-        except Exception as concat_error:
-            logger.warning(f"ffmpeg concat failed, sending clips individually: {concat_error}")
-            
-            # Delete progress message
+        # Single clip — send directly without concatenation
+        if num_clips == 1 and len(clip_video_bytes) == 1:
             try:
                 await bot.delete_message(
                     chat_id=task.chat_id,
@@ -870,27 +786,33 @@ async def process_long_video(
             except Exception:
                 pass
             
-            # Fallback: send clips individually
-            for idx, clip_bytes in enumerate(clip_video_bytes):
-                video_file = BufferedInputFile(
-                    clip_bytes,
-                    filename=f"clip_{idx+1}_{task_id}.mp4"
+            video_file = BufferedInputFile(
+                clip_video_bytes[0],
+                filename=f"long_video_{task_id}.mp4"
+            )
+            
+            prompt_preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
+            if language == "ru":
+                caption = (
+                    f"🎥 <b>Длинное видео готово!</b>\n\n"
+                    f"📝 {prompt_preview}\n"
+                    f"📐 ~{clip_duration} сек"
                 )
-                
-                if language == "ru":
-                    caption = f"🎥 Клип {idx+1}/{num_clips}"
-                else:
-                    caption = f"🎥 Clip {idx+1}/{num_clips}"
-                
-                await bot.send_video(
-                    chat_id=task.chat_id,
-                    video=video_file,
-                    caption=caption,
-                    parse_mode="HTML",
-                    supports_streaming=True
+            else:
+                caption = (
+                    f"🎥 <b>Long video ready!</b>\n\n"
+                    f"📝 {prompt_preview}\n"
+                    f"📐 ~{clip_duration} sec"
                 )
             
-            # Update task as completed
+            sent_message = await bot.send_video(
+                chat_id=task.chat_id,
+                video=video_file,
+                caption=caption,
+                parse_mode="HTML",
+                supports_streaming=True
+            )
+            
             async with async_session_maker() as session:
                 await session.execute(
                     update(VideoTask)
@@ -898,10 +820,147 @@ async def process_long_video(
                     .values(
                         status=VideoTaskStatus.COMPLETED,
                         progress=100,
-                        completed_at=datetime.utcnow()
+                        completed_at=datetime.utcnow(),
+                        result_file_id=sent_message.video.file_id
                     )
                 )
                 await session.commit()
+        
+        # Multiple clips — try concatenation with ffmpeg, fallback to sending individually
+        if num_clips > 1 and len(clip_video_bytes) > 1:
+            try:
+                import subprocess
+                import tempfile
+                import os
+                
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    # Write clips to files
+                    clip_paths = []
+                    for idx, clip_bytes in enumerate(clip_video_bytes):
+                        clip_path = os.path.join(tmpdir, f"clip_{idx}.mp4")
+                        with open(clip_path, 'wb') as f:
+                            f.write(clip_bytes)
+                        clip_paths.append(clip_path)
+                    
+                    # Create concat file
+                    concat_file = os.path.join(tmpdir, "concat.txt")
+                    with open(concat_file, 'w') as f:
+                        for cp in clip_paths:
+                            f.write(f"file '{cp}'\n")
+                    
+                    # Concatenate with ffmpeg
+                    output_path = os.path.join(tmpdir, "long_video.mp4")
+                    result = subprocess.run(
+                        [
+                            'ffmpeg', '-f', 'concat', '-safe', '0',
+                            '-i', concat_file,
+                            '-c', 'copy',
+                            '-y', output_path
+                        ],
+                        capture_output=True, timeout=120
+                    )
+                    
+                    if result.returncode == 0 and os.path.exists(output_path):
+                        with open(output_path, 'rb') as f:
+                            final_video = f.read()
+                        
+                        # Delete progress message
+                        try:
+                            await bot.delete_message(
+                                chat_id=task.chat_id,
+                                message_id=progress_msg.message_id
+                            )
+                        except Exception:
+                            pass
+                        
+                        # Send single concatenated video
+                        video_file = BufferedInputFile(
+                            final_video,
+                            filename=f"long_video_{task_id}.mp4"
+                        )
+                        
+                        prompt_preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
+                        if language == "ru":
+                            caption = (
+                                f"🎥 <b>Длинное видео готово!</b>\n\n"
+                                f"📝 {prompt_preview}\n"
+                                f"📐 {num_clips} клипов = ~{num_clips * clip_duration} сек"
+                            )
+                        else:
+                            caption = (
+                                f"🎥 <b>Long video ready!</b>\n\n"
+                                f"📝 {prompt_preview}\n"
+                                f"📐 {num_clips} clips = ~{num_clips * clip_duration} sec"
+                            )
+                        
+                        sent_message = await bot.send_video(
+                            chat_id=task.chat_id,
+                            video=video_file,
+                            caption=caption,
+                            parse_mode="HTML",
+                            supports_streaming=True
+                        )
+                        
+                        # Update task as completed
+                        async with async_session_maker() as session:
+                            await session.execute(
+                                update(VideoTask)
+                                .where(VideoTask.id == task_id)
+                                .values(
+                                    status=VideoTaskStatus.COMPLETED,
+                                    progress=100,
+                                    completed_at=datetime.utcnow(),
+                                    result_file_id=sent_message.video.file_id
+                                )
+                            )
+                            await session.commit()
+                    else:
+                        raise Exception("ffmpeg concat failed")
+                
+            except Exception as concat_error:
+                logger.warning(f"ffmpeg concat failed, sending clips individually: {concat_error}")
+                
+                # Delete progress message
+                try:
+                    await bot.delete_message(
+                        chat_id=task.chat_id,
+                        message_id=progress_msg.message_id
+                    )
+                except Exception:
+                    pass
+                
+                # Fallback: send clips individually
+                for idx, clip_bytes in enumerate(clip_video_bytes):
+                    video_file = BufferedInputFile(
+                        clip_bytes,
+                        filename=f"clip_{idx+1}_{task_id}.mp4"
+                    )
+                    
+                    if language == "ru":
+                        caption = f"🎥 Клип {idx+1}/{num_clips}"
+                    else:
+                        caption = f"🎥 Clip {idx+1}/{num_clips}"
+                    
+                    await bot.send_video(
+                        chat_id=task.chat_id,
+                        video=video_file,
+                        caption=caption,
+                        parse_mode="HTML",
+                        supports_streaming=True
+                    )
+                
+                # Update task as completed
+                async with async_session_maker() as session:
+                    await session.execute(
+                        update(VideoTask)
+                        .where(VideoTask.id == task_id)
+                        .values(
+                            status=VideoTaskStatus.COMPLETED,
+                            progress=100,
+                            completed_at=datetime.utcnow()
+                        )
+                    )
+                    await session.commit()
         
         # Increment usage and record request
         await limit_service.increment_usage(telegram_id, RequestType.LONG_VIDEO)

@@ -109,16 +109,14 @@ def get_photo_actions_keyboard(
     return builder.as_markup()
 
 def get_long_video_purchase_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
-    """Keyboard for one-time long video purchase or premium subscription."""
+    """Keyboard for one-time long video purchase (not included in premium)."""
     texts = {
         "ru": {
             "buy_one": "💰 Купить разовую генерацию",
-            "subscribe": "💎 Оформить подписку",
             "cancel": "❌ Отмена"
         },
         "en": {
             "buy_one": "💰 Buy one-time generation",
-            "subscribe": "💎 Get subscription",
             "cancel": "❌ Cancel"
         }
     }
@@ -128,12 +126,6 @@ def get_long_video_purchase_keyboard(language: str = "ru") -> InlineKeyboardMark
         InlineKeyboardButton(
             text=t["buy_one"],
             callback_data="video:long:buy_one"
-        )
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text=t["subscribe"],
-            callback_data="subscription:buy"
         )
     )
     builder.row(
@@ -156,13 +148,13 @@ def get_video_model_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
         "ru": {
             "sora2": "⚡ Быстрый (sora-2)",
             "sora2_pro": "🎬 Качество (sora-2-pro)",
-            "long_video": "🎥 Длинное видео (💎 Premium)",
+            "long_video": "🎥 Длинное видео (💰 Разовый платёж)",
             "cancel": "❌ Отмена"
         },
         "en": {
             "sora2": "⚡ Fast (sora-2)",
             "sora2_pro": "🎬 Quality (sora-2-pro)",
-            "long_video": "🎥 Long Video (💎 Premium)",
+            "long_video": "🎥 Long Video (💰 One-time)",
             "cancel": "❌ Cancel"
         }
     }

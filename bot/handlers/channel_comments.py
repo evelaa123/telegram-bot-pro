@@ -2,12 +2,15 @@
 Channel comments & group handler.
 Handles bot mentions, commands, and all content types in groups/channels.
 Supports: text, photos, voice, audio, documents — full functionality with reply_to.
+Features: cached bot_info, streaming text, inline image buttons, group context, presentations.
 """
 import re
-from typing import Tuple
+import asyncio
+import time
+from typing import Tuple, Optional
 from aiogram import Router, F, Bot
-from aiogram.types import Message, BufferedInputFile
-from aiogram.enums import ChatType
+from aiogram.types import Message, BufferedInputFile, CallbackQuery, User as TgUser
+from aiogram.enums import ChatType, ChatAction
 from aiogram.filters import Command
 
 from bot.services.ai_service import ai_service
@@ -15,6 +18,7 @@ from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
 from bot.services.subscription_service import subscription_service
 from bot.services.settings_service import settings_service
+from bot.keyboards.inline import get_subscription_keyboard, get_image_size_keyboard
 from config import settings as config_settings
 from database.redis_client import redis_client
 from database.models import RequestType, RequestStatus
@@ -22,6 +26,27 @@ import structlog
 
 logger = structlog.get_logger()
 router = Router()
+
+# ============================================
+# CACHED BOT INFO HELPER
+# ============================================
+
+async def _get_bot_username(bot: Bot, data: dict = None) -> str:
+    """Get bot username from cached data or fallback to API call."""
+    # Try cached bot_info from middleware / dispatcher
+    if data and 'bot_info' in data:
+        return data['bot_info'].username or ""
+    # Fallback: call API (should rarely happen)
+    info = await bot.get_me()
+    return info.username or ""
+
+
+async def _get_bot_id(bot: Bot, data: dict = None) -> int:
+    """Get bot user id from cached data or fallback to API call."""
+    if data and 'bot_info' in data:
+        return data['bot_info'].id
+    info = await bot.get_me()
+    return info.id
 
 # ============================================
 # KEYWORDS
@@ -126,7 +151,13 @@ def get_intent_and_prompt(text: str, bot_username: str, has_photo: bool = False)
     return 'auto', cleaned
 
 
-async def send_reply(message: Message, text: str, photo: BufferedInputFile = None, parse_mode: str = None):
+async def send_reply(
+    message: Message,
+    text: str,
+    photo: BufferedInputFile = None,
+    parse_mode: str = None,
+    reply_markup=None,
+):
     """
     Send message as reply in groups (for visibility in channel comments).
     In private chats, send normally.
@@ -145,6 +176,8 @@ async def send_reply(message: Message, text: str, photo: BufferedInputFile = Non
     }
     if parse_mode:
         kwargs["parse_mode"] = parse_mode
+    if reply_markup:
+        kwargs["reply_markup"] = reply_markup
 
     try:
         if photo:
@@ -341,16 +374,19 @@ async def group_cmd_limits(message: Message, bot: Bot):
     Command("new"),
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
 )
-async def group_cmd_new(message: Message, bot: Bot):
+async def group_cmd_new(message: Message, bot: Bot, **data):
     """Handle /new in groups — clear context."""
     db_user, language = await _check_user_access(message, bot)
     if not db_user:
         return
 
     user_id = message.from_user.id
+    chat_id = message.chat.id
     await redis_client.clear_context(user_id)
     await redis_client.clear_document_context(user_id)
     await redis_client.clear_user_state(user_id)
+    # Clear group-specific context
+    await redis_client.delete(f"group_ctx:{chat_id}:{user_id}")
 
     if language == "ru":
         text = "🔄 Контекст очищен. Можете задать новый вопрос."
@@ -364,8 +400,8 @@ async def group_cmd_new(message: Message, bot: Bot):
     Command("image"),
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
 )
-async def group_cmd_image(message: Message, bot: Bot):
-    """Handle /image <prompt> in groups — generate image directly from args."""
+async def group_cmd_image(message: Message, bot: Bot, **data):
+    """Handle /image in groups — inline buttons for size selection or direct generation."""
     db_user, language = await _check_user_access(message, bot)
     if not db_user:
         return
@@ -373,15 +409,158 @@ async def group_cmd_image(message: Message, bot: Bot):
     user_id = message.from_user.id
     prompt = _strip_command(message.text or "")
 
-    if not prompt or len(prompt.strip()) < 3:
+    if prompt and len(prompt.strip()) >= 3:
+        # Prompt supplied inline — store and show size picker
+        chat_id = message.chat.id
+        key = f"group_image:{chat_id}:{user_id}"
+        await redis_client.set(key, prompt, ttl=600)  # 10 min TTL
+
         if language == "ru":
-            await send_reply(message, "🖼 Используйте: /image [описание картинки]\n\nНапример: /image кот в космосе")
+            text = (
+                f"🖼 <b>Генерация изображения</b>\n\n"
+                f"📝 Промпт: <i>{prompt[:200]}</i>\n\n"
+                "Выберите размер:"
+            )
         else:
-            await send_reply(message, "🖼 Usage: /image [image description]\n\nExample: /image cat in space")
+            text = (
+                f"🖼 <b>Image Generation</b>\n\n"
+                f"📝 Prompt: <i>{prompt[:200]}</i>\n\n"
+                "Choose size:"
+            )
+        await send_reply(message, text, parse_mode="HTML",
+                        reply_markup=_get_group_image_size_keyboard(language))
+    else:
+        # No prompt — ask the user to provide one, save state
+        chat_id = message.chat.id
+        key = f"group_image_wait:{chat_id}:{user_id}"
+        await redis_client.set(key, "1", ttl=300)
+
+        if language == "ru":
+            await send_reply(
+                message,
+                "🖼 Напишите описание картинки в ответ на это сообщение.\n\n"
+                "<i>Например: кот в космосе</i>",
+                parse_mode="HTML",
+            )
+        else:
+            await send_reply(
+                message,
+                "🖼 Reply to this message with an image description.\n\n"
+                "<i>Example: cat in space</i>",
+                parse_mode="HTML",
+            )
+
+
+@router.message(
+    Command("presentation"),
+    F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
+)
+async def group_cmd_presentation(message: Message, bot: Bot, **data):
+    """Handle /presentation <topic> in groups."""
+    db_user, language = await _check_user_access(message, bot)
+    if not db_user:
         return
 
-    await generate_image_response(message, user_id, prompt, language)
+    user_id = message.from_user.id
+    topic = _strip_command(message.text or "")
 
+    if not topic or len(topic.strip()) < 3:
+        if language == "ru":
+            await send_reply(
+                message,
+                "📊 Используйте: /presentation [тема]\n\n"
+                "Например: /presentation Искусственный интеллект в бизнесе"
+            )
+        else:
+            await send_reply(
+                message,
+                "📊 Usage: /presentation [topic]\n\n"
+                "Example: /presentation AI in business"
+            )
+        return
+
+    await generate_presentation_response(message, user_id, topic, language)
+
+
+
+# ============================================
+# INLINE BUTTON CALLBACKS FOR GROUPS
+# ============================================
+
+def _get_group_image_size_keyboard(language: str = "ru"):
+    """Inline keyboard for image size in groups."""
+    from aiogram.types import InlineKeyboardButton
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    texts = {
+        "ru": {
+            "square": "◻️ Квадрат (1024x1024)",
+            "horizontal": "▭ Горизонтальный (1792x1024)",
+            "vertical": "▯ Вертикальный (1024x1792)",
+            "cancel": "❌ Отмена",
+        },
+        "en": {
+            "square": "◻️ Square (1024x1024)",
+            "horizontal": "▭ Horizontal (1792x1024)",
+            "vertical": "▯ Vertical (1024x1792)",
+            "cancel": "❌ Cancel",
+        },
+    }
+    t = texts.get(language, texts["ru"])
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text=t["square"], callback_data="grp_img:1024x1024"))
+    builder.row(InlineKeyboardButton(text=t["horizontal"], callback_data="grp_img:1792x1024"))
+    builder.row(InlineKeyboardButton(text=t["vertical"], callback_data="grp_img:1024x1792"))
+    builder.row(InlineKeyboardButton(text=t["cancel"], callback_data="grp_img:cancel"))
+    return builder.as_markup()
+
+
+@router.callback_query(F.data.startswith("grp_img:"))
+async def callback_group_image_size(callback: CallbackQuery, bot: Bot, **data):
+    """Handle image size selection in groups."""
+    user = callback.from_user
+    if not user:
+        await callback.answer()
+        return
+
+    action = callback.data.split(":")[1]
+
+    if action == "cancel":
+        chat_id = callback.message.chat.id
+        key = f"group_image:{chat_id}:{user.id}"
+        await redis_client.delete(key)
+        language = await user_service.get_user_language(user.id)
+        cancel_text = "❌ Генерация отменена." if language == "ru" else "❌ Generation cancelled."
+        try:
+            await callback.message.edit_text(cancel_text)
+        except Exception:
+            pass
+        await callback.answer()
+        return
+
+    size = action  # e.g. "1024x1024"
+    chat_id = callback.message.chat.id
+    key = f"group_image:{chat_id}:{user.id}"
+    prompt = await redis_client.get(key)
+
+    if not prompt:
+        language = await user_service.get_user_language(user.id)
+        no_prompt = "❌ Промпт не найден. Повторите /image" if language == "ru" else "❌ Prompt not found. Try /image again"
+        await callback.answer(no_prompt, show_alert=True)
+        return
+
+    await redis_client.delete(key)
+    language = await user_service.get_user_language(user.id)
+
+    # Acknowledge
+    try:
+        await callback.message.edit_text("🎨 Рисую..." if language == "ru" else "🎨 Drawing...")
+    except Exception:
+        pass
+    await callback.answer()
+
+    # Generate
+    await generate_image_response(callback.message, user.id, prompt, language, size=size)
 
 
 # ============================================
@@ -392,16 +571,15 @@ async def group_cmd_image(message: Message, bot: Bot):
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
     F.voice,
 )
-async def handle_group_voice(message: Message, bot: Bot):
+async def handle_group_voice(message: Message, bot: Bot, **data):
     """Handle voice messages in groups — transcribe when bot is triggered."""
-    # Voice messages: always process if it's a reply to bot, or has mention in caption
-    bot_info = await bot.get_me()
-    bot_username = bot_info.username or ""
+    bot_username = await _get_bot_username(bot, data)
+    bot_id = await _get_bot_id(bot, data)
 
     is_reply_to_bot = (
         message.reply_to_message
         and message.reply_to_message.from_user
-        and message.reply_to_message.from_user.id == bot_info.id
+        and message.reply_to_message.from_user.id == bot_id
     )
 
     # For voice, also check if user replies to a voice message WITH bot mention
@@ -422,15 +600,15 @@ async def handle_group_voice(message: Message, bot: Bot):
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
     F.audio,
 )
-async def handle_group_audio(message: Message, bot: Bot):
+async def handle_group_audio(message: Message, bot: Bot, **data):
     """Handle audio files in groups — transcribe when bot is triggered."""
-    bot_info = await bot.get_me()
-    bot_username = bot_info.username or ""
+    bot_username = await _get_bot_username(bot, data)
+    bot_id = await _get_bot_id(bot, data)
 
     is_reply_to_bot = (
         message.reply_to_message
         and message.reply_to_message.from_user
-        and message.reply_to_message.from_user.id == bot_info.id
+        and message.reply_to_message.from_user.id == bot_id
     )
 
     caption = message.caption or ""
@@ -454,16 +632,16 @@ async def handle_group_audio(message: Message, bot: Bot):
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
     F.document,
 )
-async def handle_group_document(message: Message, bot: Bot):
+async def handle_group_document(message: Message, bot: Bot, **data):
     """Handle documents in groups — analyze when bot is triggered."""
-    bot_info = await bot.get_me()
-    bot_username = bot_info.username or ""
+    bot_username = await _get_bot_username(bot, data)
+    bot_id = await _get_bot_id(bot, data)
 
     caption = message.caption or ""
     is_reply_to_bot = (
         message.reply_to_message
         and message.reply_to_message.from_user
-        and message.reply_to_message.from_user.id == bot_info.id
+        and message.reply_to_message.from_user.id == bot_id
     )
     is_mention = is_bot_triggered(caption, bot_username)
 
@@ -485,7 +663,7 @@ async def handle_group_document(message: Message, bot: Bot):
     F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}),
     F.text | F.photo,
 )
-async def handle_group_message(message: Message, bot: Bot):
+async def handle_group_message(message: Message, bot: Bot, **data):
     """Handle text and photo messages in groups/supergroups."""
 
     user = message.from_user
@@ -499,14 +677,14 @@ async def handle_group_message(message: Message, bot: Bot):
     if _is_command(text):
         return
 
-    bot_info = await bot.get_me()
-    bot_username = bot_info.username or ""
+    bot_username = await _get_bot_username(bot, data)
+    bot_id = await _get_bot_id(bot, data)
 
     # Check trigger
     is_reply_to_bot = (
         message.reply_to_message
         and message.reply_to_message.from_user
-        and message.reply_to_message.from_user.id == bot_info.id
+        and message.reply_to_message.from_user.id == bot_id
     )
     is_mention = is_bot_triggered(text, bot_username)
 
@@ -530,6 +708,24 @@ async def handle_group_message(message: Message, bot: Bot):
         is_reply_to_bot=is_reply_to_bot,
         text=text[:50] if text else "(no text)"
     )
+
+    # ---- Check if user is replying with prompt for /image (inline-button flow) ----
+    chat_id = message.chat.id
+    wait_key = f"group_image_wait:{chat_id}:{user.id}"
+    if await redis_client.get(wait_key):
+        await redis_client.delete(wait_key)
+        prompt_text = text.strip()
+        if prompt_text and len(prompt_text) >= 3:
+            # Store prompt and show size keyboard
+            key = f"group_image:{chat_id}:{user.id}"
+            await redis_client.set(key, prompt_text, ttl=600)
+            if language == "ru":
+                t = f"🖼 <b>Промпт:</b> <i>{prompt_text[:200]}</i>\n\nВыберите размер:"
+            else:
+                t = f"🖼 <b>Prompt:</b> <i>{prompt_text[:200]}</i>\n\nChoose size:"
+            await send_reply(message, t, parse_mode="HTML",
+                            reply_markup=_get_group_image_size_keyboard(language))
+            return
 
     # Determine intent
     intent, prompt = get_intent_and_prompt(text, bot_username, has_photo)
@@ -594,7 +790,12 @@ async def analyze_photo_response(
 
     has_limit, current, max_limit = await limit_service.check_limit(user_id, RequestType.DOCUMENT)
     if not has_limit:
-        await send_reply(message, f"⚠️ Лимит анализа исчерпан ({current}/{max_limit})")
+        await send_reply(
+            message,
+            f"⚠️ Лимит анализа исчерпан ({current}/{max_limit})" if language == "ru"
+            else f"⚠️ Analysis limit reached ({current}/{max_limit})",
+            reply_markup=get_subscription_keyboard(language),
+        )
         return
 
     if not source_msg.photo:
@@ -659,23 +860,30 @@ async def analyze_photo_response(
         )
 
 
-async def generate_image_response(message: Message, user_id: int, prompt: str, language: str):
+async def generate_image_response(
+    message: Message, user_id: int, prompt: str, language: str, size: str = "1024x1024"
+):
     """Generate image."""
     has_limit, current, max_limit = await limit_service.check_limit(user_id, RequestType.IMAGE)
     if not has_limit:
-        await send_reply(message, f"⚠️ Лимит картинок исчерпан ({current}/{max_limit})")
+        await send_reply(
+            message,
+            f"⚠️ Лимит картинок исчерпан ({current}/{max_limit})" if language == "ru"
+            else f"⚠️ Image limit reached ({current}/{max_limit})",
+            reply_markup=get_subscription_keyboard(language),
+        )
         return
 
     if not prompt or len(prompt.strip()) < 3:
-        await send_reply(message, "🤔 Опиши что нарисовать!")
+        await send_reply(message, "🤔 Опиши что нарисовать!" if language == "ru" else "🤔 Describe what to draw!")
         return
 
-    status_msg = await send_reply(message, "🎨 Рисую...")
+    status_msg = await send_reply(message, "🎨 Рисую..." if language == "ru" else "🎨 Drawing...")
 
     try:
         image_url, usage = await ai_service.generate_image(
             prompt=prompt,
-            size="1024x1024",
+            size=size,
             telegram_id=user_id
         )
 
@@ -721,54 +929,179 @@ async def generate_image_response(message: Message, user_id: int, prompt: str, l
         )
 
 
+def _convert_markdown_to_html(text: str) -> str:
+    """Convert Markdown to Telegram HTML (same as text.py)."""
+    text = text.replace('&', '&amp;')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
+    text = re.sub(r'```(\w*)\n?(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+    text = re.sub(r'\*\*([^*]+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__([^_]+?)__', r'<b>\1</b>', text)
+    text = re.sub(r'(?<!\*)\*([^*\n]+?)\*(?!\*)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!_)_([^_\n]+?)_(?!_)', r'<i>\1</i>', text)
+    text = re.sub(r'~~([^~]+?)~~', r'<s>\1</s>', text)
+    return text
+
+
+async def _get_group_context(chat_id: int, user_id: int):
+    """Get per-user conversation context for a specific group."""
+    import json
+    key = f"group_ctx:{chat_id}:{user_id}"
+    value = await redis_client.get(key)
+    if value is None:
+        return []
+    return json.loads(value)
+
+
+async def _add_to_group_context(
+    chat_id: int, user_id: int, role: str, content: str, max_messages: int = 10
+):
+    """Add to per-user group conversation context."""
+    import json
+    key = f"group_ctx:{chat_id}:{user_id}"
+    ctx = await _get_group_context(chat_id, user_id)
+    ctx.append({"role": role, "content": content})
+    if len(ctx) > max_messages:
+        ctx = ctx[-max_messages:]
+    await redis_client.set(key, json.dumps(ctx, ensure_ascii=False), ttl=1800)  # 30 min
+
+
 async def generate_text_response(message: Message, user_id: int, prompt: str, language: str):
-    """Generate text response."""
+    """Generate text response with streaming in groups."""
     has_limit, current, max_limit = await limit_service.check_limit(user_id, RequestType.TEXT)
     if not has_limit:
-        await send_reply(message, f"⚠️ Лимит запросов исчерпан ({current}/{max_limit})")
+        await send_reply(
+            message,
+            f"⚠️ Лимит запросов исчерпан ({current}/{max_limit})\n\n"
+            "💎 Оформите подписку для увеличения лимитов!" if language == "ru"
+            else f"⚠️ Request limit reached ({current}/{max_limit})\n\n"
+            "💎 Subscribe to increase your limits!",
+            reply_markup=get_subscription_keyboard(language),
+        )
         return
 
+    start_time = time.time()
+
     try:
+        # Build context with per-user group history
+        chat_id = message.chat.id
+        context = await _get_group_context(chat_id, user_id)
+
         messages = [
             {
                 "role": "system",
-                "content": f"You are a helpful assistant in a group chat. Be concise (2-3 paragraphs max). Respond in {'Russian' if language == 'ru' else 'English'}."
+                "content": (
+                    "You are a helpful assistant in a group chat. Be concise (2-3 paragraphs max). "
+                    f"Respond in {'Russian' if language == 'ru' else 'English'}. "
+                    "Use markdown formatting when appropriate."
+                ),
             },
-            {"role": "user", "content": prompt}
         ]
+        messages.extend(context)
+        messages.append({"role": "user", "content": prompt})
 
-        response, usage = await ai_service.generate_text(
-            messages=messages,
-            telegram_id=user_id
+        # Send initial "thinking" message
+        thinking_msg = await send_reply(
+            message,
+            "💭 Думаю..." if language == "ru" else "💭 Thinking...",
         )
 
-        if len(response) > 4000:
-            response = response[:4000] + "..."
+        # Stream the response
+        full_response = ""
+        last_update_time = time.time()
+        token_count = 0
 
-        await send_reply(message, response)
+        # Group rate-limit: don't update faster than every 1s to avoid 429
+        GROUP_UPDATE_INTERVAL_MS = 1000
+
+        model = config_settings.default_text_model
+
+        async for chunk, is_complete in ai_service.generate_text_stream(
+            messages=messages,
+            telegram_id=user_id,
+            model=model,
+        ):
+            full_response += chunk
+            token_count += 1
+
+            current_time = time.time()
+            time_since_update = (current_time - last_update_time) * 1000
+
+            should_update = (
+                token_count >= config_settings.stream_token_batch_size
+                or time_since_update >= GROUP_UPDATE_INTERVAL_MS
+                or is_complete
+            )
+
+            if should_update and full_response.strip():
+                try:
+                    display_text = full_response
+                    if len(display_text) > 4000:
+                        display_text = display_text[:4000] + "..."
+
+                    html_text = _convert_markdown_to_html(display_text)
+
+                    try:
+                        await thinking_msg.edit_text(html_text, parse_mode="HTML")
+                    except Exception:
+                        await thinking_msg.edit_text(display_text)
+
+                    last_update_time = current_time
+                    token_count = 0
+
+                    if not is_complete:
+                        await asyncio.sleep(0.1)  # respect rate limits
+
+                except Exception as e:
+                    if "message is not modified" not in str(e).lower():
+                        logger.warning("Stream edit fail", error=str(e))
+
+        # Final update
+        if full_response.strip():
+            try:
+                display_text = full_response
+                if len(display_text) > 4000:
+                    display_text = display_text[:4000] + "\n\n... (ответ обрезан)"
+                html_text = _convert_markdown_to_html(display_text)
+                try:
+                    await thinking_msg.edit_text(html_text, parse_mode="HTML")
+                except Exception:
+                    await thinking_msg.edit_text(display_text)
+            except Exception:
+                pass
+
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        # Save to group context
+        await _add_to_group_context(chat_id, user_id, "user", prompt)
+        await _add_to_group_context(chat_id, user_id, "assistant", full_response)
 
         await limit_service.increment_usage(user_id, RequestType.TEXT)
         await limit_service.record_request(
             telegram_id=user_id,
             request_type=RequestType.TEXT,
             prompt=prompt[:500],
-            response_preview=response[:500],
-            model=usage.get("model", "gpt-4o-mini"),
+            response_preview=full_response[:500],
+            model=model,
             status=RequestStatus.SUCCESS,
-            cost_usd=float(usage.get("cost_usd", 0))
+            cost_usd=0,
+            duration_ms=duration_ms,
         )
 
     except Exception as e:
-        logger.error("Text error", error=str(e))
+        logger.error("Text error in group", error=str(e))
+        duration_ms = int((time.time() - start_time) * 1000)
         await send_reply(message, f"❌ Ошибка: {str(e)[:100]}")
 
         await limit_service.record_request(
             telegram_id=user_id,
             request_type=RequestType.TEXT,
             prompt=prompt[:500],
-            model="gpt-4o-mini",
+            model=config_settings.default_text_model,
             status=RequestStatus.FAILED,
-            error_message=str(e)
+            error_message=str(e),
+            duration_ms=duration_ms,
         )
 
 
@@ -786,10 +1119,12 @@ async def transcribe_voice_response(
 
     has_limit, current, max_limit = await limit_service.check_limit(user_id, RequestType.VOICE)
     if not has_limit:
-        if language == "ru":
-            await send_reply(message, f"⚠️ Лимит распознавания голоса исчерпан ({current}/{max_limit})")
-        else:
-            await send_reply(message, f"⚠️ Voice recognition limit reached ({current}/{max_limit})")
+        await send_reply(
+            message,
+            f"⚠️ Лимит распознавания голоса исчерпан ({current}/{max_limit})" if language == "ru"
+            else f"⚠️ Voice recognition limit reached ({current}/{max_limit})",
+            reply_markup=get_subscription_keyboard(language),
+        )
         return
 
     if voice.file_size and voice.file_size > 25 * 1024 * 1024:
@@ -874,7 +1209,12 @@ async def transcribe_audio_response(
 
     has_limit, current, max_limit = await limit_service.check_limit(user_id, RequestType.VOICE)
     if not has_limit:
-        await send_reply(message, f"⚠️ Лимит распознавания голоса исчерпан ({current}/{max_limit})")
+        await send_reply(
+            message,
+            f"⚠️ Лимит распознавания голоса исчерпан ({current}/{max_limit})" if language == "ru"
+            else f"⚠️ Voice limit reached ({current}/{max_limit})",
+            reply_markup=get_subscription_keyboard(language),
+        )
         return
 
     if audio.file_size and audio.file_size > 25 * 1024 * 1024:
@@ -959,7 +1299,12 @@ async def analyze_document_response(
 
     has_limit, current, max_limit = await limit_service.check_limit(user_id, RequestType.DOCUMENT)
     if not has_limit:
-        await send_reply(message, f"⚠️ Лимит документов исчерпан ({current}/{max_limit})")
+        await send_reply(
+            message,
+            f"⚠️ Лимит документов исчерпан ({current}/{max_limit})" if language == "ru"
+            else f"⚠️ Document limit reached ({current}/{max_limit})",
+            reply_markup=get_subscription_keyboard(language),
+        )
         return
 
     # Check file size (20 MB)
@@ -1076,3 +1421,85 @@ async def auto_detect_and_respond(message: Message, user_id: int, prompt: str, l
     except Exception as e:
         logger.error("Auto-detect failed", error=str(e))
         await generate_text_response(message, user_id, prompt, language)
+
+
+async def generate_presentation_response(
+    message: Message, user_id: int, topic: str, language: str
+):
+    """Generate a presentation in a group chat."""
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user_id, RequestType.PRESENTATION
+    )
+    if not has_limit:
+        await send_reply(
+            message,
+            f"⚠️ Лимит презентаций исчерпан ({current}/{max_limit})" if language == "ru"
+            else f"⚠️ Presentation limit reached ({current}/{max_limit})",
+            reply_markup=get_subscription_keyboard(language),
+        )
+        return
+
+    status_msg = await send_reply(
+        message,
+        "📊 Генерирую презентацию...\nЭто может занять 1-3 минуты." if language == "ru"
+        else "📊 Generating presentation...\nThis may take 1-3 minutes.",
+    )
+
+    try:
+        from bot.services.presentation_service import presentation_service
+
+        pptx_bytes, info = await presentation_service.generate_presentation(
+            topic=topic,
+            slides_count=7,
+            style="business",
+            include_images=True,
+            language=language,
+        )
+
+        await limit_service.increment_usage(user_id, RequestType.PRESENTATION)
+
+        filename = f"presentation_{topic[:30].replace(' ', '_')}.pptx"
+        document = BufferedInputFile(pptx_bytes, filename=filename)
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        if language == "ru":
+            caption = (
+                f"✅ <b>Презентация готова!</b>\n\n"
+                f"📝 Тема: {info.get('title', topic)}\n"
+                f"📊 Слайдов: {info.get('slides_count', 7)}"
+            )
+        else:
+            caption = (
+                f"✅ <b>Presentation ready!</b>\n\n"
+                f"📝 Topic: {info.get('title', topic)}\n"
+                f"📊 Slides: {info.get('slides_count', 7)}"
+            )
+
+        is_group = message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+        thread_id = message.message_thread_id if is_group else None
+        reply_to = message.message_id if is_group else None
+
+        await message.bot.send_document(
+            chat_id=message.chat.id,
+            document=document,
+            caption=caption,
+            parse_mode="HTML",
+            reply_to_message_id=reply_to,
+            message_thread_id=thread_id,
+        )
+
+    except Exception as e:
+        logger.error("Presentation error in group", error=str(e), exc_info=True)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await send_reply(
+            message,
+            f"❌ Ошибка генерации презентации: {str(e)[:100]}" if language == "ru"
+            else f"❌ Presentation generation error: {str(e)[:100]}",
+        )

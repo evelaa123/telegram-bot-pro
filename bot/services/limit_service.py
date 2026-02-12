@@ -57,6 +57,8 @@ class LimitService:
             
             if user and user.is_premium:
                 # Use premium limits from DB settings or env
+                # NOTE: long_video is EXCLUDED from premium subscription.
+                # It requires a one-time payment or admin-set custom_limits.
                 try:
                     from api.routers.settings import get_setting
                     db_limits = await get_setting("limits")
@@ -68,14 +70,14 @@ class LimitService:
                         "document": db_limits.get("premium_document", -1),
                         "presentation": db_limits.get("premium_presentation", -1),
                         "video_animate": db_limits.get("premium_video_animate", 10),
-                        "long_video": db_limits.get("premium_long_video", 3),
+                        "long_video": 0,  # Only via one-time payment or custom_limits
                     }
                 except Exception:
-                    # Fallback: premium = unlimited
+                    # Fallback: premium = unlimited (except long_video)
                     base_limits = {
                         "text": -1, "image": -1, "video": -1,
                         "voice": -1, "document": -1, "presentation": -1,
-                        "video_animate": 10, "long_video": 3,
+                        "video_animate": 10, "long_video": 0,
                     }
             else:
                 # Use free limits from DB settings

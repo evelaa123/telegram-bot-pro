@@ -552,11 +552,41 @@ class SubscriptionService:
     ) -> str:
         """
         Get formatted subscription status text.
+        Reads real limits from DB dynamically.
         
         Returns:
             Formatted string with subscription info
         """
         info = await self.get_subscription_info(telegram_id)
+        
+        # --- Fetch real limits from DB ---
+        try:
+            from api.routers.settings import get_setting
+            db_limits = await get_setting("limits")
+        except Exception:
+            db_limits = {}
+        
+        free_text = db_limits.get("text", 10)
+        free_image = db_limits.get("image", 5)
+        free_video = db_limits.get("video", 5)
+        free_voice = db_limits.get("voice", 5)
+        free_document = db_limits.get("document", 10)
+        free_presentation = db_limits.get("presentation", 3)
+        
+        premium_text = db_limits.get("premium_text", -1)
+        premium_image = db_limits.get("premium_image", -1)
+        premium_video = db_limits.get("premium_video", 3)
+        premium_voice = db_limits.get("premium_voice", -1)
+        premium_document = db_limits.get("premium_document", -1)
+        premium_presentation = db_limits.get("premium_presentation", -1)
+        premium_animate = db_limits.get("premium_video_animate", 10)
+        premium_long_video = db_limits.get("premium_long_video", 3)
+        
+        def _fmt(val, lang="ru"):
+            """Format a limit value. -1 = unlimited."""
+            if val == -1:
+                return "∞ (безлимит)" if lang == "ru" else "∞ (unlimited)"
+            return str(val)
         
         if info["is_premium"]:
             expires = info["expires_at"]
@@ -567,15 +597,37 @@ class SubscriptionService:
                     "💳 <b>Ваша подписка</b>\n\n"
                     f"✅ Статус: <b>Премиум</b>\n"
                     f"📅 Действует до: {expires_str}\n\n"
-                    "🚀 У вас безлимитный доступ ко всем функциям!"
+                    "📊 <b>Ваши лимиты (в день):</b>\n"
+                    f"• Текст: {_fmt(premium_text, 'ru')}\n"
+                    f"• Изображения: {_fmt(premium_image, 'ru')}\n"
+                    f"• Видео: {_fmt(premium_video, 'ru')}\n"
+                    f"• Голосовые: {_fmt(premium_voice, 'ru')}\n"
+                    f"• Документы: {_fmt(premium_document, 'ru')}\n"
+                    f"• Презентации: {_fmt(premium_presentation, 'ru')}\n"
+                    f"• Оживление фото: {_fmt(premium_animate, 'ru')}\n"
                 )
+                if premium_long_video != 0:
+                    text += f"• Длинное видео: {_fmt(premium_long_video, 'ru')}\n"
+                else:
+                    text += "• Длинное видео: разовый платёж\n"
             else:
                 text = (
                     "💳 <b>Your Subscription</b>\n\n"
                     f"✅ Status: <b>Premium</b>\n"
                     f"📅 Valid until: {expires_str}\n\n"
-                    "🚀 You have unlimited access to all features!"
+                    "📊 <b>Your limits (per day):</b>\n"
+                    f"• Text: {_fmt(premium_text, 'en')}\n"
+                    f"• Images: {_fmt(premium_image, 'en')}\n"
+                    f"• Videos: {_fmt(premium_video, 'en')}\n"
+                    f"• Voice: {_fmt(premium_voice, 'en')}\n"
+                    f"• Documents: {_fmt(premium_document, 'en')}\n"
+                    f"• Presentations: {_fmt(premium_presentation, 'en')}\n"
+                    f"• Animate photo: {_fmt(premium_animate, 'en')}\n"
                 )
+                if premium_long_video != 0:
+                    text += f"• Long video: {_fmt(premium_long_video, 'en')}\n"
+                else:
+                    text += "• Long video: one-time payment\n"
         else:
             price = settings.premium_price_rub
             
@@ -584,13 +636,22 @@ class SubscriptionService:
                     "💳 <b>Ваша подписка</b>\n\n"
                     f"📝 Статус: <b>Бесплатный</b>\n\n"
                     "Ограничения бесплатной версии:\n"
-                    "• 10 текстовых запросов/день\n"
-                    "• 5 изображений/день\n"
-                    "• 5 видео/день\n"
-                    "• 5 голосовых/день\n"
-                    "• 3 презентации/день\n\n"
+                    f"• {free_text} текстовых запросов/день\n"
+                    f"• {free_image} изображений/день\n"
+                    f"• {free_video} видео/день\n"
+                    f"• {free_voice} голосовых/день\n"
+                    f"• {free_document} документов/день\n"
+                    f"• {free_presentation} презентации/день\n\n"
                     f"💎 <b>Премиум подписка</b> — {price}₽/месяц\n"
-                    "✅ Безлимитный доступ ко всем функциям!\n\n"
+                    "Премиум лимиты (в день):\n"
+                    f"• Текст: {_fmt(premium_text, 'ru')}\n"
+                    f"• Изображения: {_fmt(premium_image, 'ru')}\n"
+                    f"• Видео: {_fmt(premium_video, 'ru')}\n"
+                    f"• Голосовые: {_fmt(premium_voice, 'ru')}\n"
+                    f"• Документы: {_fmt(premium_document, 'ru')}\n"
+                    f"• Презентации: {_fmt(premium_presentation, 'ru')}\n"
+                    f"• Оживление фото: {_fmt(premium_animate, 'ru')}\n"
+                    "• Длинное видео: разовый платёж\n\n"
                     "Нажмите кнопку ниже для оформления:"
                 )
             else:
@@ -598,13 +659,22 @@ class SubscriptionService:
                     "💳 <b>Your Subscription</b>\n\n"
                     f"📝 Status: <b>Free</b>\n\n"
                     "Free version limits:\n"
-                    "• 10 text requests/day\n"
-                    "• 5 images/day\n"
-                    "• 5 videos/day\n"
-                    "• 5 voice/day\n"
-                    "• 3 presentations/day\n\n"
+                    f"• {free_text} text requests/day\n"
+                    f"• {free_image} images/day\n"
+                    f"• {free_video} videos/day\n"
+                    f"• {free_voice} voice/day\n"
+                    f"• {free_document} documents/day\n"
+                    f"• {free_presentation} presentations/day\n\n"
                     f"💎 <b>Premium subscription</b> — {price}₽/month\n"
-                    "✅ Unlimited access to all features!\n\n"
+                    "Premium limits (per day):\n"
+                    f"• Text: {_fmt(premium_text, 'en')}\n"
+                    f"• Images: {_fmt(premium_image, 'en')}\n"
+                    f"• Videos: {_fmt(premium_video, 'en')}\n"
+                    f"• Voice: {_fmt(premium_voice, 'en')}\n"
+                    f"• Documents: {_fmt(premium_document, 'en')}\n"
+                    f"• Presentations: {_fmt(premium_presentation, 'en')}\n"
+                    f"• Animate photo: {_fmt(premium_animate, 'en')}\n"
+                    "• Long video: one-time payment\n\n"
                     "Click the button below to subscribe:"
                 )
         

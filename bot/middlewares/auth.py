@@ -51,6 +51,18 @@ class AuthMiddleware(BaseMiddleware):
             return await handler(event, data)
         
         # ============================================
+        # ПЕРЕДАЁМ КЭШИРОВАННУЮ ИНФОРМАЦИЮ О БОТЕ
+        # (избегаем повторных вызовов bot.get_me())
+        # ============================================
+        bot_obj: Bot = data.get('bot')
+        if bot_obj and hasattr(bot_obj, 'session'):
+            # Get cached bot_info from dispatcher workflow_data
+            from aiogram import Dispatcher
+            dispatcher = data.get('dispatcher') or data.get('dp')
+            if dispatcher and "bot_info" in dispatcher.workflow_data:
+                data['bot_info'] = dispatcher.workflow_data["bot_info"]
+        
+        # ============================================
         # ГРУППЫ/КАНАЛЫ - ПРОПУСКАЕМ БЕЗ ПРОВЕРОК
         # Все проверки будут в channel_comments.py
         # после проверки триггера (упоминания бота)

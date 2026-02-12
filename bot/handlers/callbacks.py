@@ -26,7 +26,11 @@ async def callback_subscription_buy(callback: CallbackQuery):
     
     subscription_text = await subscription_service.get_subscription_text(user.id, language)
     
-    await callback.message.answer(subscription_text)
+    from bot.keyboards.inline import get_subscription_keyboard as get_sub_kb
+    await callback.message.answer(
+        subscription_text,
+        reply_markup=get_sub_kb(language),
+    )
     await callback.answer()
 
 

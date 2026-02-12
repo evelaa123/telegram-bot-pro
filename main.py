@@ -67,6 +67,15 @@ async def on_startup():
     await redis_client.connect()
     logger.info("Redis connected")
     
+    # Cache bot info at startup (avoid calling bot.get_me() on every message)
+    bot_info = await bot.get_me()
+    dp["bot_info"] = bot_info
+    logger.info(
+        "Bot info cached",
+        bot_id=bot_info.id,
+        bot_username=bot_info.username,
+    )
+    
     # Set bot commands
     await set_bot_commands(bot)
     

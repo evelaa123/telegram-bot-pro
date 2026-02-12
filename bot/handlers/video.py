@@ -149,108 +149,82 @@ async def callback_video_duration(callback: CallbackQuery):
 
 @router.callback_query(F.data == "video:long")
 async def callback_video_long(callback: CallbackQuery):
-    """Handle long video (premium) selection."""
+    """Handle long video selection.
+    
+    Long video is NOT included in premium subscription.
+    Access via: one-time payment (sets custom_limits) or admin-set custom_limits.
+    """
     user = callback.from_user
     language = await user_service.get_user_language(user.id)
     
-    # Check if user is premium or has custom long_video limit
-    from bot.services.subscription_service import subscription_service
-    is_premium = await subscription_service.check_premium(user.id)
-    
-    if not is_premium:
-        # Check if user has custom long_video limit (from one-time purchase)
-        has_limit, current, max_limit = await limit_service.check_limit(
-            user.id, RequestType.LONG_VIDEO
-        )
-        
-        if not has_limit or max_limit == 0:
-            # Offer one-time purchase or premium
-            try:
-                from api.routers.settings import get_setting
-                db_limits = await get_setting("limits")
-                one_time_price = db_limits.get("long_video_one_time_price_rub", 0)
-            except Exception:
-                one_time_price = 0
-            
-            if one_time_price > 0:
-                if language == "ru":
-                    await callback.message.edit_text(
-                        "🎥 <b>Длинное видео</b>\n\n"
-                        "Эта функция доступна для Premium подписчиков.\n\n"
-                        f"💎 Оформите подписку\n"
-                        f"💰 Или купите разовую генерацию за <b>{one_time_price}₽</b>\n\n"
-                        "Выберите вариант:",
-                        reply_markup=get_long_video_purchase_keyboard(language)
-                    )
-                else:
-                    await callback.message.edit_text(
-                        "🎥 <b>Long Video</b>\n\n"
-                        "This feature is available for Premium subscribers.\n\n"
-                        f"💎 Get a subscription\n"
-                        f"💰 Or buy a one-time generation for <b>{one_time_price}₽</b>\n\n"
-                        "Choose an option:",
-                        reply_markup=get_long_video_purchase_keyboard(language)
-                    )
-            else:
-                if language == "ru":
-                    await callback.answer(
-                        "💎 Длинные видео доступны только для Premium подписчиков!",
-                        show_alert=True
-                    )
-                else:
-                    await callback.answer(
-                        "💎 Long videos are available for Premium subscribers only!",
-                        show_alert=True
-                    )
-            await callback.answer()
-            return
-    
-    # Check limits for long video
+    # Check limits — custom_limits override takes priority in get_user_limits()
     has_limit, current, max_limit = await limit_service.check_limit(
         user.id, RequestType.LONG_VIDEO
     )
     
-    if not has_limit:
-        if language == "ru":
-            await callback.answer(
-                f"⚠️ Лимит длинных видео исчерпан ({max_limit})",
-                show_alert=True
-            )
+    if not has_limit or max_limit == 0:
+        # No access — offer one-time purchase
+        try:
+            from api.routers.settings import get_setting
+            db_limits = await get_setting("limits")
+            one_time_price = db_limits.get("long_video_one_time_price_rub", 0)
+        except Exception:
+            one_time_price = 0
+        
+        if one_time_price > 0:
+            if language == "ru":
+                await callback.message.edit_text(
+                    "🎥 <b>Длинное видео</b>\n\n"
+                    "Эта функция доступна по разовому платежу.\n\n"
+                    f"💰 Купите разовую генерацию за <b>{one_time_price}₽</b>\n\n"
+                    "Выберите вариант:",
+                    reply_markup=get_long_video_purchase_keyboard(language)
+                )
+            else:
+                await callback.message.edit_text(
+                    "🎥 <b>Long Video</b>\n\n"
+                    "This feature is available via one-time payment.\n\n"
+                    f"💰 Buy a one-time generation for <b>{one_time_price}₽</b>\n\n"
+                    "Choose an option:",
+                    reply_markup=get_long_video_purchase_keyboard(language)
+                )
         else:
-            await callback.answer(
-                f"⚠️ Long video limit reached ({max_limit})",
-                show_alert=True
-            )
+            if language == "ru":
+                await callback.answer(
+                    "🎥 Длинные видео доступны по разовому платежу. Платёж не настроен.",
+                    show_alert=True
+                )
+            else:
+                await callback.answer(
+                    "🎥 Long videos available via one-time payment. Payment not configured.",
+                    show_alert=True
+                )
+        await callback.answer()
         return
     
-    # Set state and ask for prompt
+    # User has access (custom_limits set) — ask for prompt
     await redis_client.set_user_state(user.id, "long_video_prompt:sora-2")
     
-    from bot.services.subscription_service import subscription_service
-    is_prem = await subscription_service.check_premium(user.id)
-    clip_dur = 12 if is_prem else 4
-    total_sec = 3 * clip_dur
+    # Single continuous video: 1 clip at max duration
+    clip_dur = 12
+    remaining = max_limit - current if max_limit != -1 else "∞"
     
     if language == "ru":
-        remaining = max_limit - current if max_limit != -1 else "∞"
-        tier_note = "" if is_prem else "\n💡 Оформите Premium для видео до 36 секунд!"
         await callback.message.edit_text(
             "🎥 <b>Длинное видео</b>\n\n"
             f"Осталось: {remaining}\n\n"
-            f"📐 3 клипа по {clip_dur} сек = ~{total_sec} секунд\n"
-            f"🤖 Модель: sora-2\n{tier_note}\n\n"
+            f"📐 Генерация: 1 видео ~{clip_dur} секунд\n"
+            "🤖 Модель: sora-2\n\n"
             "Опишите сюжет для длинного видео.\n\n"
             "<i>Например: «Космический корабль пролетает через пояс астероидов и "
             "приближается к планете с кольцами»</i>"
         )
     else:
-        remaining = max_limit - current if max_limit != -1 else "∞"
-        tier_note = "" if is_prem else "\n💡 Get Premium for videos up to 36 seconds!"
         await callback.message.edit_text(
             "🎥 <b>Long Video</b>\n\n"
             f"Remaining: {remaining}\n\n"
-            f"📐 3 clips x {clip_dur} sec = ~{total_sec} seconds\n"
-            f"🤖 Model: sora-2\n{tier_note}\n\n"
+            f"📐 Generation: 1 video ~{clip_dur} seconds\n"
+            "🤖 Model: sora-2\n\n"
             "Describe the plot for a long video.\n\n"
             "<i>Example: 'A spaceship flying through an asteroid belt and "
             "approaching a ringed planet'</i>"
@@ -673,61 +647,33 @@ async def queue_long_video_generation(
     model: str = "sora-2"
 ):
     """
-    Queue long video generation (stitching multiple clips).
-    Premium only feature.
+    Queue long video generation.
+    Access via one-time payment or custom_limits only (NOT included in premium).
+    Generates a single continuous video (1 clip x 12s) instead of multiple clips.
     """
     language = await user_service.get_user_language(user_id)
     
-    # Check limits (covers both premium and one-time purchase users)
+    # Check limits (custom_limits override in get_user_limits)
     has_limit, current, max_limit = await limit_service.check_limit(
         user_id, RequestType.LONG_VIDEO
     )
     
     if not has_limit or max_limit == 0:
-        # No access at all
-        from bot.services.subscription_service import subscription_service
-        is_premium = await subscription_service.check_premium(user_id)
-        
-        if not is_premium:
-            if language == "ru":
-                await message.answer(
-                    "💎 Генерация длинных видео доступна только для премиум-подписчиков!\n\n"
-                    "Используйте /video для покупки разовой генерации.",
-                    reply_markup=get_subscription_keyboard(language)
-                )
-            else:
-                await message.answer(
-                    "💎 Long video generation is available for premium subscribers only!\n\n"
-                    "Use /video to buy a one-time generation.",
-                    reply_markup=get_subscription_keyboard(language)
-                )
+        if language == "ru":
+            await message.answer(
+                "🎥 Генерация длинных видео доступна по разовому платежу.\n\n"
+                "Используйте /video и выберите «Длинное видео» для покупки.",
+            )
         else:
-            if language == "ru":
-                await message.answer(
-                    f"⚠️ Лимит длинных видео исчерпан ({max_limit}).\n\n"
-                    "💎 Лимит обновится завтра.",
-                    reply_markup=get_subscription_keyboard(language)
-                )
-            else:
-                await message.answer(
-                    f"⚠️ Long video limit reached ({max_limit}).\n\n"
-                    "💎 Limit resets tomorrow.",
-                    reply_markup=get_subscription_keyboard(language)
-                )
+            await message.answer(
+                "🎥 Long video generation is available via one-time payment.\n\n"
+                "Use /video and select 'Long Video' to purchase.",
+            )
         return
     
-    # Queue multiple video tasks
-    # Default: 3 clips of 4 sec = 12 sec for faster/cheaper generation
-    # Premium users get 3 clips of 12 sec = 36 sec
-    from bot.services.subscription_service import subscription_service
-    is_premium_user = await subscription_service.check_premium(user_id)
-    
-    if is_premium_user:
-        num_clips = 3
-        clip_duration = 12  # Premium: 3x12s = 36s
-    else:
-        num_clips = 3
-        clip_duration = 4   # One-time purchase: 3x4s = 12s
+    # Generate a single continuous video (1 clip x 12 sec)
+    num_clips = 1
+    clip_duration = 12
     
     try:
         from worker.tasks import queue_long_video_task
@@ -754,8 +700,8 @@ async def queue_long_video_generation(
             "🎥 <b>Длинное видео в очереди!</b>\n\n"
             f"📝 Промпт: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
             f"🤖 Модель: {model}\n"
-            f"📐 {num_clips} клипов по {clip_duration} сек = ~{total_sec} секунд\n\n"
-            "⏳ Примерное время: 5-15 минут\n\n"
+            f"📐 1 видео ~{total_sec} секунд\n\n"
+            "⏳ Примерное время: 3-10 минут\n\n"
             "Я отправлю готовое видео, когда оно будет готово."
         )
     else:
@@ -763,8 +709,8 @@ async def queue_long_video_generation(
             "🎥 <b>Long video queued!</b>\n\n"
             f"📝 Prompt: <i>{prompt[:200]}{'...' if len(prompt) > 200 else ''}</i>\n"
             f"🤖 Model: {model}\n"
-            f"📐 {num_clips} clips x {clip_duration} sec = ~{total_sec} seconds\n\n"
-            "⏳ Estimated time: 5-15 minutes\n\n"
+            f"📐 1 video ~{total_sec} seconds\n\n"
+            "⏳ Estimated time: 3-10 minutes\n\n"
             "I'll send you the video when it's ready."
         )
     
