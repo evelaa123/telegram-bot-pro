@@ -148,7 +148,8 @@ class CometAPIService:
                     yield "", True
                     
         except Exception as e:
-            logger.error("CometAPI text streaming error", error=str(e), model=model)
+            error_msg = str(e) or f"{type(e).__name__}: (no details)"
+            logger.error("CometAPI text streaming error", error=error_msg, model=model, error_type=type(e).__name__)
             raise
     
     async def generate_text(

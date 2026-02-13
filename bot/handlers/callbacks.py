@@ -20,17 +20,76 @@ router = Router()
 
 @router.callback_query(F.data == "subscription:buy")
 async def callback_subscription_buy(callback: CallbackQuery):
-    """Handle subscription buy button from limit messages."""
+    """Handle subscription buy button — create payment and show payment link.
+    
+    This is triggered from limit-reached messages and subscription info.
+    Instead of duplicating subscription text, go directly to payment.
+    """
     user = callback.from_user
     language = await user_service.get_user_language(user.id)
     
-    subscription_text = await subscription_service.get_subscription_text(user.id, language)
+    # Check if already premium
+    is_premium = await subscription_service.check_premium(user.id)
+    if is_premium:
+        if language == "ru":
+            await callback.answer("✅ У вас уже есть премиум подписка!", show_alert=True)
+        else:
+            await callback.answer("✅ You already have a premium subscription!", show_alert=True)
+        return
     
-    from bot.keyboards.inline import get_subscription_keyboard as get_sub_kb
-    await callback.message.answer(
-        subscription_text,
-        reply_markup=get_sub_kb(language),
-    )
+    # Create payment (1 month)
+    payment_url, payment_id = await subscription_service.create_payment(user.id, months=1)
+    
+    if payment_url:
+        from aiogram.types import InlineKeyboardButton
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(
+                text="💳 Оплатить" if language == "ru" else "💳 Pay",
+                url=payment_url
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="❌ Отмена" if language == "ru" else "❌ Cancel",
+                callback_data="subscription:close"
+            )
+        )
+        
+        price = settings.premium_price_rub
+        if language == "ru":
+            text = (
+                "💎 <b>Оформление подписки</b>\n\n"
+                f"💰 Стоимость: {price}₽/месяц\n\n"
+                "После оплаты вам будут доступны расширенные лимиты.\n"
+                "Нажмите кнопку ниже для перехода к оплате:"
+            )
+        else:
+            text = (
+                "💎 <b>Subscribe</b>\n\n"
+                f"💰 Price: {price}₽/month\n\n"
+                "After payment you'll get extended limits.\n"
+                "Click the button below to proceed to payment:"
+            )
+        
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup())
+        except Exception:
+            await callback.message.answer(text, reply_markup=builder.as_markup())
+    else:
+        if language == "ru":
+            await callback.answer(
+                "❌ Оплата временно недоступна. Попробуйте позже.",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                "❌ Payment temporarily unavailable. Try later.",
+                show_alert=True
+            )
+    
     await callback.answer()
 
 
