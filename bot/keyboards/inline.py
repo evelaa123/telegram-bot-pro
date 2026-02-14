@@ -342,29 +342,19 @@ def get_document_actions_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
 
 def get_download_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """
-    Get download-as-file keyboard with format choice (TXT / DOCX).
+    Get download-as-Word-file keyboard (single button, always .docx).
     """
     texts = {
-        "ru": {
-            "download_docx": "📥 Скачать .docx",
-            "download_txt": "📥 Скачать .txt",
-        },
-        "en": {
-            "download_docx": "📥 Download .docx",
-            "download_txt": "📥 Download .txt",
-        }
+        "ru": {"download": "📥 Скачать как файл"},
+        "en": {"download": "📥 Download as file"},
     }
     t = texts.get(language, texts["ru"])
     
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(
-            text=t["download_docx"],
+            text=t["download"],
             callback_data="text:download:docx"
-        ),
-        InlineKeyboardButton(
-            text=t["download_txt"],
-            callback_data="text:download:txt"
         )
     )
     return builder.as_markup()

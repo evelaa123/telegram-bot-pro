@@ -336,31 +336,50 @@ async def send_as_file(
 
 def _markdown_to_docx_bytes(text: str) -> bytes:
     """
-    Convert markdown-formatted text to a nicely styled Word (.docx) document.
+    Convert markdown/AI-response text to a beautifully styled Word (.docx) document.
     
     Handles: headers (#, ##, ###), bold (**), italic (*), code blocks (```),
-    inline code (`), bullet lists (- / *), numbered lists, tables, and paragraphs.
+    inline code (`), bullet lists (- / *), numbered lists, tables, horizontal rules,
+    source links from web search, and proper paragraph spacing.
     
     Returns:
         bytes of the .docx file
     """
     from docx import Document
-    from docx.shared import Pt, Inches, RGBColor
+    from docx.shared import Pt, Inches, RGBColor, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
     import io
     
     doc = Document()
     
-    # Set default font
+    # --- Document-wide styling ---
     style = doc.styles['Normal']
     font = style.font
     font.name = 'Calibri'
     font.size = Pt(11)
+    style.paragraph_format.space_after = Pt(6)
+    style.paragraph_format.line_spacing = 1.15
     
-    # Strip HTML tags that may be in the text (from convert_markdown_to_html)
+    # Set margins
+    for section in doc.sections:
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+    
+    # --- Pre-process: extract source links and clean text ---
+    # Extract <a href="url">title</a> links before stripping HTML
+    source_links = []
+    link_pattern = re.compile(r'<a\s+href="([^"]+)"[^>]*>([^<]+)</a>')
+    for m in link_pattern.finditer(text):
+        source_links.append({"url": m.group(1), "title": m.group(2)})
+    
+    # Strip all HTML tags
     clean_text = re.sub(r'<[^>]+>', '', text)
     # Unescape HTML entities
-    clean_text = clean_text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&#x27;', "'").replace('&quot;', '"')
+    clean_text = (clean_text.replace('&amp;', '&').replace('&lt;', '<')
+                  .replace('&gt;', '>').replace('&#x27;', "'").replace('&quot;', '"'))
     
     lines = clean_text.split('\n')
     i = 0
@@ -371,6 +390,11 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
         
         # Skip empty lines
         if not stripped:
+            i += 1
+            continue
+        
+        # Skip source-link-only lines (🔗 Source | Source)
+        if stripped.startswith('🔗') and '|' in stripped:
             i += 1
             continue
         
@@ -385,15 +409,16 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
             
             code_text = '\n'.join(code_lines)
             p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(4)
             run = p.add_run(code_text)
             run.font.name = 'Consolas'
             run.font.size = Pt(9)
             run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
-            # Light gray background via paragraph shading
-            from docx.oxml.ns import qn
+            # Light gray background
             shading = p.paragraph_format.element.get_or_add_pPr()
             shd = shading.makeelement(qn('w:shd'), {
-                qn('w:fill'): 'F0F0F0',
+                qn('w:fill'): 'F5F5F5',
                 qn('w:val'): 'clear',
             })
             shading.append(shd)
@@ -408,7 +433,6 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
                 if re.match(r'^\|[\s\-:]+\|', row_text):
                     i += 1
                     continue
-                # Parse cells
                 cells = [c.strip() for c in row_text.strip('|').split('|')]
                 table_lines.append(cells)
                 i += 1
@@ -423,24 +447,38 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
                         if c_idx < cols:
                             cell = table.cell(r_idx, c_idx)
                             cell.text = cell_text
-                            # Bold the header row
-                            if r_idx == 0:
-                                for paragraph in cell.paragraphs:
-                                    for run in paragraph.runs:
+                            for paragraph in cell.paragraphs:
+                                paragraph.paragraph_format.space_after = Pt(2)
+                                for run in paragraph.runs:
+                                    run.font.size = Pt(10)
+                                    if r_idx == 0:
                                         run.bold = True
+                                        run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+                            # Header row background
+                            if r_idx == 0:
+                                tc = cell._tc
+                                tcPr = tc.get_or_add_tcPr()
+                                shd = tcPr.makeelement(qn('w:shd'), {
+                                    qn('w:fill'): 'E8EAF6',
+                                    qn('w:val'): 'clear',
+                                })
+                                tcPr.append(shd)
             continue
         
         # --- Headers ---
         if stripped.startswith('### '):
-            doc.add_heading(stripped[4:], level=3)
+            h = doc.add_heading(stripped[4:], level=3)
+            h.paragraph_format.space_before = Pt(8)
             i += 1
             continue
         elif stripped.startswith('## '):
-            doc.add_heading(stripped[3:], level=2)
+            h = doc.add_heading(stripped[3:], level=2)
+            h.paragraph_format.space_before = Pt(12)
             i += 1
             continue
         elif stripped.startswith('# '):
-            doc.add_heading(stripped[2:], level=1)
+            h = doc.add_heading(stripped[2:], level=1)
+            h.paragraph_format.space_before = Pt(14)
             i += 1
             continue
         
@@ -448,6 +486,7 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
         if re.match(r'^[\-\*]\s+', stripped):
             item_text = re.sub(r'^[\-\*]\s+', '', stripped)
             p = doc.add_paragraph(style='List Bullet')
+            p.paragraph_format.space_after = Pt(2)
             _add_formatted_runs(p, item_text)
             i += 1
             continue
@@ -456,15 +495,27 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
         if re.match(r'^\d+\.\s+', stripped):
             item_text = re.sub(r'^\d+\.\s+', '', stripped)
             p = doc.add_paragraph(style='List Number')
+            p.paragraph_format.space_after = Pt(2)
             _add_formatted_runs(p, item_text)
             i += 1
             continue
         
-        # --- Horizontal rule (---) ---
+        # --- Horizontal rule (--- or ===) ---
         if re.match(r'^[\-]{3,}$', stripped) or re.match(r'^[=]{3,}$', stripped):
-            # Add a thin horizontal line via a paragraph border
             p = doc.add_paragraph()
-            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(4)
+            # Draw a thin line using bottom border
+            pPr = p.paragraph_format.element.get_or_add_pPr()
+            pBdr = pPr.makeelement(qn('w:pBdr'), {})
+            bottom = pBdr.makeelement(qn('w:bottom'), {
+                qn('w:val'): 'single',
+                qn('w:sz'): '6',
+                qn('w:space'): '1',
+                qn('w:color'): 'CCCCCC',
+            })
+            pBdr.append(bottom)
+            pPr.append(pBdr)
             i += 1
             continue
         
@@ -472,6 +523,26 @@ def _markdown_to_docx_bytes(text: str) -> bytes:
         p = doc.add_paragraph()
         _add_formatted_runs(p, stripped)
         i += 1
+    
+    # --- Append source links at the end ---
+    if source_links:
+        doc.add_paragraph()  # spacer
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(8)
+        run = p.add_run('Источники / Sources')
+        run.bold = True
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+        
+        for link in source_links:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(2)
+            run = p.add_run(f"• {link['title']}")
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(0x1A, 0x6B, 0xB8)
+            run = p.add_run(f"  ({link['url']})")
+            run.font.size = Pt(8)
+            run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
     
     # Save to bytes
     buffer = io.BytesIO()
