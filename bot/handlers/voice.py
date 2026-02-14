@@ -297,8 +297,8 @@ async def _route_voice_intent(
                 "Choose model:"
             )
         
-        # Store prompt for video flow
-        await redis_client.set_user_state(user_id, f"video_voice_prompt:{prompt[:500]}")
+        # Store prompt for video flow (5 min TTL)
+        await redis_client.set_user_state(user_id, f"video_voice_prompt:{prompt[:500]}", ttl=300)
         await message.answer(text, parse_mode="HTML", reply_markup=get_video_model_keyboard(language))
         return
     
@@ -491,22 +491,57 @@ async def handle_voice_message(message: Message):
         )
         
         # ============================================
-        # CHECK ACTIVE REDIS STATE FIRST
-        # If user is waiting for a prompt (video/image/animate etc.),
-        # use the transcribed text as that prompt directly.
+        # INTENT-AWARE STATE ROUTING
+        # Prompt-waiting states (video_prompt, image_prompt, etc.) —
+        # user entered via buttons, all text goes as prompt.
+        # Passive states (photo_edit_chain, document_question) —
+        # check if user starts a new intent; if so, exit state.
         # ============================================
         current_state = await redis_client.get_user_state(user.id)
         
         if current_state and text.strip():
-            routed = await _route_voice_to_active_state(
-                message=message,
-                user_id=user.id,
-                transcribed_text=text.strip(),
-                state=current_state,
-                language=language
+            # Passive states that can intercept unrelated messages
+            _passive_states = ("photo_edit_chain:", "document_question")
+            _is_passive = any(
+                current_state.startswith(ps) if ps.endswith(":") else current_state == ps
+                for ps in _passive_states
             )
-            if routed:
-                return
+            
+            if _is_passive:
+                # Check if user wants something completely different
+                from bot.handlers.text import _detect_intent
+                _new_intent = _detect_intent(text.strip())
+                
+                if _new_intent:
+                    # User explicitly wants a new action → exit state
+                    await redis_client.clear_user_state(user.id)
+                    logger.info(
+                        f"User {user.id} exited {current_state} due to voice intent: "
+                        f"{_new_intent.get('type', '?')}"
+                    )
+                    # Fall through to voice intent routing below
+                else:
+                    # No new intent → route to state handler as usual
+                    routed = await _route_voice_to_active_state(
+                        message=message,
+                        user_id=user.id,
+                        transcribed_text=text.strip(),
+                        state=current_state,
+                        language=language
+                    )
+                    if routed:
+                        return
+            else:
+                # Prompt-waiting states — always route text as prompt
+                routed = await _route_voice_to_active_state(
+                    message=message,
+                    user_id=user.id,
+                    transcribed_text=text.strip(),
+                    state=current_state,
+                    language=language
+                )
+                if routed:
+                    return
         
         # ============================================
         # CHECK REPLY-TO-PHOTO (voice as reply to a photo message)

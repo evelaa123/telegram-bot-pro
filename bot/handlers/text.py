@@ -224,108 +224,103 @@ async def handle_text_message(message: Message):
     if state:
         logger.info(f"User {user.id} has state: {state}")
         
-        # Common exit patterns — if user types a command/question
-        # instead of a prompt, clear the state and fall through
-        _text_lower = text.lower().strip()
-        _exit_patterns = [
-            "лимит", "настрой", "помощ", "подпис", "поддерж",
-            "limit", "setting", "help", "subscri", "support",
-            "какие у меня", "мои лимиты", "новый диалог",
-            "my limits", "new dialog",
-        ]
-        _wants_exit = text.startswith("/") or any(p in _text_lower for p in _exit_patterns)
+        _is_slash_command = text.startswith("/")
         
-        # Обработка промпта для видео
-        if state.startswith("video_prompt:"):
-            if _wants_exit:
+        # ============================================================
+        # GROUP 1: Prompt-waiting states (user entered via buttons).
+        # User explicitly chose a model/size/duration and the bot is
+        # waiting for a prompt. ALL text goes as the prompt — the user
+        # knows what they're doing.  Only slash commands exit.
+        # ============================================================
+        _prompt_states = (
+            "video_prompt:", "video_remix:", "image_prompt:",
+            "animate_photo:", "long_video_prompt:",
+        )
+        
+        if any(state.startswith(ps) for ps in _prompt_states):
+            if _is_slash_command:
                 await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited video_prompt state")
+                logger.info(f"User {user.id} exited {state} via slash command")
+                # Fall through to normal handling
             else:
-                parts = state.split(":")
-                if len(parts) >= 3:
-                    model = parts[1]
-                    duration = int(parts[2])
-                    from bot.handlers.video import queue_video_generation
-                    await queue_video_generation(message, user.id, text, model, duration)
+                # Route text as prompt to the appropriate handler
+                if state.startswith("video_prompt:"):
+                    parts = state.split(":")
+                    if len(parts) >= 3:
+                        model = parts[1]
+                        duration = int(parts[2])
+                        from bot.handlers.video import queue_video_generation
+                        await queue_video_generation(message, user.id, text, model, duration)
+                        return
+                
+                elif state.startswith("video_remix:"):
+                    video_id = state.split(":")[1]
+                    from bot.handlers.video import queue_video_remix
+                    await queue_video_remix(message, user.id, video_id, text)
+                    return
+                
+                elif state.startswith("image_prompt:"):
+                    size = state.split(":")[1]
+                    from bot.handlers.image import generate_image
+                    await generate_image(message, user.id, text, size)
+                    return
+                
+                elif state.startswith("animate_photo:"):
+                    file_id = state.split(":", 1)[1]
+                    from bot.handlers.video import queue_animate_photo
+                    if not text.strip() or text.strip() == ".":
+                        prompt = "Animate this photo with gentle natural motion, subtle camera movement"
+                    else:
+                        prompt = text
+                    await queue_animate_photo(message, user.id, file_id, prompt)
+                    return
+                
+                elif state.startswith("long_video_prompt:"):
+                    parts = state.split(":")
+                    model = parts[1] if len(parts) > 1 else "sora-2"
+                    from bot.handlers.video import queue_long_video_generation
+                    await queue_long_video_generation(message, user.id, text, model)
                     return
         
-        # Обработка ремикса видео
-        elif state.startswith("video_remix:"):
-            if _wants_exit:
+        # ============================================================
+        # GROUP 2: Passive / chain states (photo_edit_chain, document_question).
+        # These can intercept unrelated messages, so we use intent-aware
+        # routing: if the user explicitly starts a NEW intent (image,
+        # video, command, presentation, slash), clear state and route
+        # to the new intent. Otherwise — route to the state handler.
+        # ============================================================
+        elif state.startswith("photo_edit_chain:") or state == "document_question":
+            _new_intent = _detect_intent(text)
+            
+            if _is_slash_command or _new_intent:
                 await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited video_remix state")
-            else:
-                video_id = state.split(":")[1]
-                from bot.handlers.video import queue_video_remix
-                await queue_video_remix(message, user.id, video_id, text)
-                return
-        
-        # Обработка промпта для изображения
-        elif state.startswith("image_prompt:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited image_prompt state")
-            else:
-                size = state.split(":")[1]
-                from bot.handlers.image import generate_image
-                await generate_image(message, user.id, text, size)
-                return
-        
-        # Обработка оживления фото (image-to-video)
-        elif state.startswith("animate_photo:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited animate_photo state")
-            else:
-                file_id = state.split(":", 1)[1]
-                from bot.handlers.video import queue_animate_photo
-                # Treat "." or empty/whitespace as auto-animate
-                if not text.strip() or text.strip() == ".":
-                    prompt = "Animate this photo with gentle natural motion, subtle camera movement"
-                else:
-                    prompt = text
-                await queue_animate_photo(message, user.id, file_id, prompt)
-                return
-        
-        # Обработка промпта для длинного видео
-        elif state.startswith("long_video_prompt:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited long_video_prompt state")
-            else:
-                parts = state.split(":")
-                model = parts[1] if len(parts) > 1 else "sora-2"
-                from bot.handlers.video import queue_long_video_generation
-                await queue_long_video_generation(message, user.id, text, model)
-                return
-        
-        # Обработка вопроса по документу
-        elif state == "document_question":
-            doc_context = await redis_client.get_document_context(user.id)
-            if doc_context:
-                from bot.handlers.document import process_document_request
-                language = await user_service.get_user_language(user.id)
-                await process_document_request(
-                    message=message,
-                    user_id=user.id,
-                    text=doc_context["content"],
-                    images=[],
-                    request=text,
-                    filename=doc_context["filename"],
-                    language=language
+                logger.info(
+                    f"User {user.id} exited {state} due to new intent: "
+                    f"{'/' if _is_slash_command else _new_intent.get('type', '?')}"
                 )
-                return
-        
-        # Обработка цепочки редактирования фото
-        elif state.startswith("photo_edit_chain:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited photo_edit_chain state")
-            else:
+                # Fall through to normal intent routing below
+            
+            elif state == "document_question":
+                doc_context = await redis_client.get_document_context(user.id)
+                if doc_context:
+                    from bot.handlers.document import process_document_request
+                    language = await user_service.get_user_language(user.id)
+                    await process_document_request(
+                        message=message,
+                        user_id=user.id,
+                        text=doc_context["content"],
+                        images=[],
+                        request=text,
+                        filename=doc_context["filename"],
+                        language=language
+                    )
+                    return
+            
+            elif state.startswith("photo_edit_chain:"):
+                # State is ONLY set by the "Edit Again" button (not auto)
                 file_id = state.split(":", 1)[1]
                 language = await user_service.get_user_language(user.id)
                 try:
-                    # Download the photo by file_id and edit it
                     file = await message.bot.get_file(file_id)
                     file_bytes_io = await message.bot.download_file(file.file_path)
                     image_data = file_bytes_io.read() if hasattr(file_bytes_io, 'read') else file_bytes_io
@@ -347,11 +342,16 @@ async def handle_text_message(message: Message):
                         await message.answer("❌ Failed to edit photo. Please send the photo again.")
                 return
         
-        # Обработка сообщения в поддержку
+        # ============================================================
+        # GROUP 3: Support message — dedicated flow, only slash exits.
+        # ============================================================
         elif state == "support_message":
-            from bot.handlers.support import handle_support_message
-            await handle_support_message(message, user.id)
-            return
+            if _is_slash_command:
+                await redis_client.clear_user_state(user.id)
+            else:
+                from bot.handlers.support import handle_support_message
+                await handle_support_message(message, user.id)
+                return
     
     # ============================================
     # REPLY-TO-DOCUMENT/PHOTO В ЛИЧНЫХ ЧАТАХ
@@ -526,7 +526,7 @@ async def handle_text_message(message: Message):
                     f"📝 Prompt: <i>{_intent['prompt'][:200]}</i>\n\n"
                     "Choose model:"
                 )
-            await redis_client.set_user_state(user.id, f"video_voice_prompt:{_intent['prompt'][:500]}")
+            await redis_client.set_user_state(user.id, f"video_voice_prompt:{_intent['prompt'][:500]}", ttl=300)
             await message.answer(txt, parse_mode="HTML", reply_markup=get_video_model_keyboard(language))
             return
         
