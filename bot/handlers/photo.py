@@ -540,8 +540,11 @@ async def _handle_photo_edit(message: Message, user_id: int, caption: str, langu
             ex=3600
         )
         
-        # Set chain-edit state so next text/voice continues editing this photo
-        await redis_client.set_user_state(user_id, f"photo_edit_chain:{sent_file_id}")
+        # Do NOT auto-set photo_edit_chain state here.
+        # The chain-edit state is ONLY activated when the user presses
+        # the "Редактировать ещё" / "Edit Again" button.
+        # This prevents unrelated text/voice messages from being
+        # accidentally routed to the photo editor.
         
         # Record usage
         model_used = usage.get("model", "gpt-image-1")
@@ -681,7 +684,7 @@ async def _handle_photo_edit_from_bytes(
             reply_markup=get_photo_edit_actions_keyboard(language=language)
         )
         
-        # Save the sent photo's file_id for animate/chain-edit
+        # Save the sent photo's file_id for animate/chain-edit button
         if sent_msg.photo:
             sent_file_id = sent_msg.photo[-1].file_id
             await redis_client.client.set(
@@ -692,9 +695,11 @@ async def _handle_photo_edit_from_bytes(
         else:
             sent_file_id = ""
         
-        # Set chain-edit state so next text/voice continues editing this photo
-        if sent_file_id:
-            await redis_client.set_user_state(user_id, f"photo_edit_chain:{sent_file_id}")
+        # Do NOT auto-set photo_edit_chain state here.
+        # The chain-edit state is ONLY activated when the user presses
+        # the "Редактировать ещё" / "Edit Again" button.
+        # This prevents unrelated text/voice messages from being
+        # accidentally routed to the photo editor.
         
         # Save to context (rich description for recall)
         context_user_msg = f"[Пользователь ответил на фото с инструкцией для редактирования: {caption}]"
@@ -975,7 +980,7 @@ async def callback_photo_animate(callback: CallbackQuery):
     
     file_id = file_id.decode() if isinstance(file_id, bytes) else file_id
     
-    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}")
+    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}", ttl=300)
     
     if language == "ru":
         await callback.message.answer(
@@ -1013,20 +1018,24 @@ async def callback_photo_edit_again(callback: CallbackQuery):
     
     file_id = file_id.decode() if isinstance(file_id, bytes) else file_id
     
-    # Set chain-edit state
-    await redis_client.set_user_state(user.id, f"photo_edit_chain:{file_id}")
+    # Set chain-edit state with short TTL (5 min).
+    # The state auto-expires so stale chain-edit states don't capture
+    # unrelated messages sent much later.
+    await redis_client.set_user_state(user.id, f"photo_edit_chain:{file_id}", ttl=300)
     
     if language == "ru":
         await callback.message.answer(
             "✏️ <b>Редактирование фото</b>\n\n"
             "Напишите или скажите голосом, что изменить на фото.\n\n"
-            "<i>Например: «Добавь тень», «Сделай ярче», «Убери фон»</i>"
+            "<i>Например: «Добавь тень», «Сделай ярче», «Убери фон»</i>\n\n"
+            "⏱ У вас 5 минут, чтобы описать изменения."
         )
     else:
         await callback.message.answer(
             "✏️ <b>Photo Editing</b>\n\n"
             "Type or say what to change in the photo.\n\n"
-            "<i>Example: 'Add shadow', 'Make brighter', 'Remove background'</i>"
+            "<i>Example: 'Add shadow', 'Make brighter', 'Remove background'</i>\n\n"
+            "⏱ You have 5 minutes to describe the changes."
         )
     
     await callback.answer()

@@ -67,8 +67,8 @@ async def callback_image_size(callback: CallbackQuery):
     user = callback.from_user
     size = callback.data.split(":")[1]  # 1024x1024, 1792x1024, 1024x1792
     
-    # Store selected size and switch to image prompt mode
-    await redis_client.set_user_state(user.id, f"image_prompt:{size}")
+    # Store selected size and switch to image prompt mode (5 min TTL)
+    await redis_client.set_user_state(user.id, f"image_prompt:{size}", ttl=300)
     
     language = await user_service.get_user_language(user.id)
     
@@ -143,9 +143,9 @@ async def callback_image_edit(callback: CallbackQuery):
     if state and state.startswith("last_image_prompt:"):
         parts = state.split(":", 2)
         size = parts[1] if len(parts) > 1 else "1024x1024"
-        await redis_client.set_user_state(user.id, f"image_prompt:{size}")
+        await redis_client.set_user_state(user.id, f"image_prompt:{size}", ttl=300)
     else:
-        await redis_client.set_user_state(user.id, "image_prompt:1024x1024")
+        await redis_client.set_user_state(user.id, "image_prompt:1024x1024", ttl=300)
     
     language = await user_service.get_user_language(user.id)
     
@@ -287,8 +287,8 @@ async def callback_photo_animate(callback: CallbackQuery):
     
     file_id = file_id.decode() if isinstance(file_id, bytes) else file_id
     
-    # Store file_id and switch to animate prompt state
-    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}")
+    # Store file_id and switch to animate prompt state (5 min TTL)
+    await redis_client.set_user_state(user.id, f"animate_photo:{file_id}", ttl=300)
     
     if language == "ru":
         await callback.message.answer(

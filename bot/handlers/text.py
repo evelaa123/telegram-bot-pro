@@ -224,23 +224,29 @@ async def handle_text_message(message: Message):
     if state:
         logger.info(f"User {user.id} has state: {state}")
         
-        # Common exit patterns — if user types a command/question
-        # instead of a prompt, clear the state and fall through
-        _text_lower = text.lower().strip()
-        _exit_patterns = [
-            "лимит", "настрой", "помощ", "подпис", "поддерж",
-            "limit", "setting", "help", "subscri", "support",
-            "какие у меня", "мои лимиты", "новый диалог",
-            "my limits", "new dialog",
-        ]
-        _wants_exit = text.startswith("/") or any(p in _text_lower for p in _exit_patterns)
+        # ---- Intent-aware state routing ----
+        # Before routing to any active state, detect if the user is starting
+        # a COMPLETELY NEW intent (command, image, video, presentation).
+        # If so, clear the active state and process the new intent.
+        # This prevents bugs like: user is in photo_edit_chain, says
+        # "создай картинку кота" → bot tries to edit the photo instead.
+        _new_intent = _detect_intent(text)
+        _is_slash_command = text.startswith("/")
         
-        # Обработка промпта для видео
-        if state.startswith("video_prompt:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited video_prompt state")
-            else:
+        # If user typed a slash command or an explicit new intent,
+        # exit the current state and fall through to normal routing.
+        if _is_slash_command or _new_intent:
+            await redis_client.clear_user_state(user.id)
+            logger.info(
+                f"User {user.id} exited {state} state due to new intent: "
+                f"{'/' if _is_slash_command else _new_intent.get('type', '?')}"
+            )
+            # Fall through — the code below will handle intent routing or GPT
+        else:
+            # No explicit new intent → route to the active state handler
+            
+            # Обработка промпта для видео
+            if state.startswith("video_prompt:"):
                 parts = state.split(":")
                 if len(parts) >= 3:
                     model = parts[1]
@@ -248,35 +254,23 @@ async def handle_text_message(message: Message):
                     from bot.handlers.video import queue_video_generation
                     await queue_video_generation(message, user.id, text, model, duration)
                     return
-        
-        # Обработка ремикса видео
-        elif state.startswith("video_remix:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited video_remix state")
-            else:
+            
+            # Обработка ремикса видео
+            elif state.startswith("video_remix:"):
                 video_id = state.split(":")[1]
                 from bot.handlers.video import queue_video_remix
                 await queue_video_remix(message, user.id, video_id, text)
                 return
-        
-        # Обработка промпта для изображения
-        elif state.startswith("image_prompt:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited image_prompt state")
-            else:
+            
+            # Обработка промпта для изображения
+            elif state.startswith("image_prompt:"):
                 size = state.split(":")[1]
                 from bot.handlers.image import generate_image
                 await generate_image(message, user.id, text, size)
                 return
-        
-        # Обработка оживления фото (image-to-video)
-        elif state.startswith("animate_photo:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited animate_photo state")
-            else:
+            
+            # Обработка оживления фото (image-to-video)
+            elif state.startswith("animate_photo:"):
                 file_id = state.split(":", 1)[1]
                 from bot.handlers.video import queue_animate_photo
                 # Treat "." or empty/whitespace as auto-animate
@@ -286,42 +280,35 @@ async def handle_text_message(message: Message):
                     prompt = text
                 await queue_animate_photo(message, user.id, file_id, prompt)
                 return
-        
-        # Обработка промпта для длинного видео
-        elif state.startswith("long_video_prompt:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited long_video_prompt state")
-            else:
+            
+            # Обработка промпта для длинного видео
+            elif state.startswith("long_video_prompt:"):
                 parts = state.split(":")
                 model = parts[1] if len(parts) > 1 else "sora-2"
                 from bot.handlers.video import queue_long_video_generation
                 await queue_long_video_generation(message, user.id, text, model)
                 return
-        
-        # Обработка вопроса по документу
-        elif state == "document_question":
-            doc_context = await redis_client.get_document_context(user.id)
-            if doc_context:
-                from bot.handlers.document import process_document_request
-                language = await user_service.get_user_language(user.id)
-                await process_document_request(
-                    message=message,
-                    user_id=user.id,
-                    text=doc_context["content"],
-                    images=[],
-                    request=text,
-                    filename=doc_context["filename"],
-                    language=language
-                )
-                return
-        
-        # Обработка цепочки редактирования фото
-        elif state.startswith("photo_edit_chain:"):
-            if _wants_exit:
-                await redis_client.clear_user_state(user.id)
-                logger.info(f"User {user.id} exited photo_edit_chain state")
-            else:
+            
+            # Обработка вопроса по документу
+            elif state == "document_question":
+                doc_context = await redis_client.get_document_context(user.id)
+                if doc_context:
+                    from bot.handlers.document import process_document_request
+                    language = await user_service.get_user_language(user.id)
+                    await process_document_request(
+                        message=message,
+                        user_id=user.id,
+                        text=doc_context["content"],
+                        images=[],
+                        request=text,
+                        filename=doc_context["filename"],
+                        language=language
+                    )
+                    return
+            
+            # Обработка цепочки редактирования фото
+            # (state is now ONLY set by the "Edit Again" button)
+            elif state.startswith("photo_edit_chain:"):
                 file_id = state.split(":", 1)[1]
                 language = await user_service.get_user_language(user.id)
                 try:
@@ -346,12 +333,12 @@ async def handle_text_message(message: Message):
                     else:
                         await message.answer("❌ Failed to edit photo. Please send the photo again.")
                 return
-        
-        # Обработка сообщения в поддержку
-        elif state == "support_message":
-            from bot.handlers.support import handle_support_message
-            await handle_support_message(message, user.id)
-            return
+            
+            # Обработка сообщения в поддержку
+            elif state == "support_message":
+                from bot.handlers.support import handle_support_message
+                await handle_support_message(message, user.id)
+                return
     
     # ============================================
     # REPLY-TO-DOCUMENT/PHOTO В ЛИЧНЫХ ЧАТАХ
@@ -526,7 +513,7 @@ async def handle_text_message(message: Message):
                     f"📝 Prompt: <i>{_intent['prompt'][:200]}</i>\n\n"
                     "Choose model:"
                 )
-            await redis_client.set_user_state(user.id, f"video_voice_prompt:{_intent['prompt'][:500]}")
+            await redis_client.set_user_state(user.id, f"video_voice_prompt:{_intent['prompt'][:500]}", ttl=300)
             await message.answer(txt, parse_mode="HTML", reply_markup=get_video_model_keyboard(language))
             return
         

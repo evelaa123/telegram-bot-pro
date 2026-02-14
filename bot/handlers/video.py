@@ -83,8 +83,8 @@ async def callback_video_model(callback: CallbackQuery):
     user = callback.from_user
     model = callback.data.split(":")[2]  # sora-2 or sora-2-pro
     
-    # Store model and show duration selection
-    await redis_client.set_user_state(user.id, f"video_model:{model}")
+    # Store model and show duration selection (5 min TTL)
+    await redis_client.set_user_state(user.id, f"video_model:{model}", ttl=300)
     
     language = await user_service.get_user_language(user.id)
     
@@ -122,8 +122,8 @@ async def callback_video_duration(callback: CallbackQuery):
     
     model = state.split(":")[1]
     
-    # Store full config for prompt input
-    await redis_client.set_user_state(user.id, f"video_prompt:{model}:{duration}")
+    # Store full config for prompt input (5 min TTL)
+    await redis_client.set_user_state(user.id, f"video_prompt:{model}:{duration}", ttl=300)
     
     language = await user_service.get_user_language(user.id)
     
@@ -209,8 +209,8 @@ async def callback_video_long(callback: CallbackQuery):
         await callback.answer()
         return
     
-    # User has access (custom_limits set) — ask for prompt
-    await redis_client.set_user_state(user.id, "long_video_prompt:sora-2")
+    # User has access (custom_limits set) — ask for prompt (5 min TTL)
+    await redis_client.set_user_state(user.id, "long_video_prompt:sora-2", ttl=300)
     
     # 3 clips x 12s stitched into one continuous ~36s video
     num_clips = 3
@@ -359,8 +359,8 @@ async def callback_video_remix(callback: CallbackQuery):
     
     video_id = video_id.decode() if isinstance(video_id, bytes) else video_id
     
-    # Store video ID for remix
-    await redis_client.set_user_state(user.id, f"video_remix:{video_id}")
+    # Store video ID for remix (5 min TTL)
+    await redis_client.set_user_state(user.id, f"video_remix:{video_id}", ttl=300)
     
     language = await user_service.get_user_language(user.id)
     
