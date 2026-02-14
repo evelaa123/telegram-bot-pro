@@ -492,30 +492,47 @@ async def handle_voice_message(message: Message):
         
         # ============================================
         # INTENT-AWARE STATE ROUTING
-        # If user has an active state (video_prompt, image_prompt, etc.),
-        # check whether the voice message starts a NEW intent.
-        # If it does (e.g., "создай картинку кота" while in photo_edit_chain),
-        # clear the state and route to the new intent.
-        # If it's plain text, route to the active state handler.
+        # Prompt-waiting states (video_prompt, image_prompt, etc.) —
+        # user entered via buttons, all text goes as prompt.
+        # Passive states (photo_edit_chain, document_question) —
+        # check if user starts a new intent; if so, exit state.
         # ============================================
         current_state = await redis_client.get_user_state(user.id)
         
         if current_state and text.strip():
-            # Classify intent to see if user wants something new
-            from bot.handlers.text import _detect_intent
-            _new_intent = _detect_intent(text.strip())
+            # Passive states that can intercept unrelated messages
+            _passive_states = ("photo_edit_chain:", "document_question")
+            _is_passive = any(
+                current_state.startswith(ps) if ps.endswith(":") else current_state == ps
+                for ps in _passive_states
+            )
             
-            if _new_intent:
-                # User explicitly wants a new action (image/video/command/presentation)
-                # → clear the active state and fall through to voice intent routing
-                await redis_client.clear_user_state(user.id)
-                logger.info(
-                    f"User {user.id} exited {current_state} state due to voice intent: "
-                    f"{_new_intent.get('type', '?')}"
-                )
-                # Fall through to intent routing below
+            if _is_passive:
+                # Check if user wants something completely different
+                from bot.handlers.text import _detect_intent
+                _new_intent = _detect_intent(text.strip())
+                
+                if _new_intent:
+                    # User explicitly wants a new action → exit state
+                    await redis_client.clear_user_state(user.id)
+                    logger.info(
+                        f"User {user.id} exited {current_state} due to voice intent: "
+                        f"{_new_intent.get('type', '?')}"
+                    )
+                    # Fall through to voice intent routing below
+                else:
+                    # No new intent → route to state handler as usual
+                    routed = await _route_voice_to_active_state(
+                        message=message,
+                        user_id=user.id,
+                        transcribed_text=text.strip(),
+                        state=current_state,
+                        language=language
+                    )
+                    if routed:
+                        return
             else:
-                # No new intent detected → route to the active state handler
+                # Prompt-waiting states — always route text as prompt
                 routed = await _route_voice_to_active_state(
                     message=message,
                     user_id=user.id,
