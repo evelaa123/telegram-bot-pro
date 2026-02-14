@@ -623,19 +623,15 @@ async def _auto_process_transcribed_text(
             "refer to the conversation history above. "
             "Context is kept for 30 minutes and up to 20 messages.\n\n"
             
-            "WEB SEARCH: You have a web_search tool. Use it ONLY when the user asks about:\n"
-            "- Current events, news, prices, weather, exchange rates\n"
-            "- Real-time data, sports scores, stock prices\n"
-            "- Specific facts you are uncertain about\n"
-            "Do NOT use web search for:\n"
-            "- Greetings, casual conversation, jokes, small talk\n"
-            "- General knowledge questions you can answer confidently\n"
-            "- Creative tasks (writing, brainstorming, coding)\n"
-            "Do NOT fabricate facts — if truly unsure about factual claims, search first."
+            "Do NOT fabricate facts — if unsure about factual claims, say so."
         )
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(context)
         messages.append({"role": "user", "content": text})
+        
+        # Determine if web search is needed (keyword-based)
+        from bot.handlers.text import _should_search_web
+        enable_search = _should_search_web(text)
         
         # Try Responses API with web search first
         full_response = ""
@@ -645,7 +641,7 @@ async def _auto_process_transcribed_text(
             full_response, search_usage = await ai_service.generate_text_with_search(
                 messages=messages,
                 telegram_id=user_id,
-                enable_search=True,
+                enable_search=enable_search,
             )
             used_search = search_usage.get("web_search_used", False)
             
