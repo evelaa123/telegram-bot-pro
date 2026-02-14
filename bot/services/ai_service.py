@@ -140,6 +140,49 @@ class AIService:
         )
     
     # =========================================
+    # Text with Web Search (Responses API)
+    # =========================================
+    
+    async def generate_text_with_search(
+        self,
+        messages: List[Dict[str, str]],
+        telegram_id: int = None,
+        model: str = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        enable_search: bool = True,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate text with optional web search via Responses API.
+        
+        The model automatically decides when to search the web.
+        Falls back to regular text generation if Responses API fails.
+        
+        Returns:
+            Tuple of (response_text, usage_info)
+        """
+        model = model or "qwen3-max-2026-01-23"
+        
+        if self.cometapi.is_configured():
+            logger.info(f"Text+search generation using CometAPI/{model}", user_id=telegram_id)
+            return await self.cometapi.generate_text_with_search(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                enable_search=enable_search,
+            )
+        else:
+            # OpenAI fallback — no search support, use regular generation
+            logger.info("Text generation using OpenAI (fallback, no search)", user_id=telegram_id)
+            return await self.openai.generate_text(
+                messages=messages,
+                model="gpt-4o-mini",
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+    
+    # =========================================
     # Vision (Image Analysis via CometAPI)
     # =========================================
     
@@ -258,6 +301,56 @@ class AIService:
         if self.cometapi.is_configured():
             return await self.cometapi.download_image(url)
         return await self.openai.download_image(url)
+    
+    # =========================================
+    # Image Editing (GPT-Image-1)
+    # =========================================
+    
+    async def edit_image(
+        self,
+        image_data: bytes,
+        prompt: str,
+        telegram_id: int = None,
+        model: str = "gpt-image-1",
+        size: str = "auto",
+        quality: str = "auto"
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """
+        Edit an image based on text instruction using GPT-Image-1.
+        
+        The user sends a photo + caption like "add a dent to the car"
+        and gets back an edited image.
+        
+        Args:
+            image_data: Original image bytes
+            prompt: Edit instruction text
+            telegram_id: User ID for logging
+            model: Image editing model
+            size: Output size
+            quality: Output quality
+            
+        Returns:
+            Tuple of (edited_image_bytes, usage_info)
+        """
+        if self.cometapi.is_configured():
+            logger.info(f"Image editing using CometAPI/{model}", user_id=telegram_id)
+            return await self.cometapi.edit_image(
+                image_data=image_data,
+                prompt=prompt,
+                model=model,
+                size=size,
+                quality=quality
+            )
+        else:
+            # Fallback to OpenAI direct
+            logger.info(f"Image editing using OpenAI/{model} (fallback)", user_id=telegram_id)
+            return await self.openai.edit_image(
+                image_data=image_data,
+                prompt=prompt,
+                model=model,
+                size=size,
+                quality=quality
+            )
     
     # =========================================
     # Video Generation (CometAPI / Sora)

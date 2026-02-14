@@ -172,7 +172,7 @@ async def callback_select_style(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(PresentationStates.waiting_topic)
+@router.message(PresentationStates.waiting_topic, F.text)
 async def process_presentation_topic(message: Message, state: FSMContext):
     """Process presentation topic and show configuration."""
     user = message.from_user

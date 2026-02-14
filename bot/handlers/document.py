@@ -1,6 +1,7 @@
 """
 Document processing handler.
 Handles various document formats with GPT-4o Vision.
+Supports single documents and multi-document media groups.
 """
 import asyncio
 import time
@@ -12,7 +13,8 @@ from bot.services.ai_service import ai_service
 from bot.services.document_service import document_service
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
-from bot.keyboards.inline import get_document_actions_keyboard
+from bot.keyboards.inline import get_document_actions_keyboard, get_download_keyboard
+from bot.utils.helpers import convert_markdown_to_html, split_text_for_telegram, edit_or_send_long, send_long_message, send_as_file
 from database.redis_client import redis_client
 from database.models import RequestType, RequestStatus
 from config import settings
@@ -21,13 +23,22 @@ import structlog
 logger = structlog.get_logger()
 router = Router()
 
+# Document media group collector (same pattern as photo media groups)
+_doc_media_groups: dict = {}
+_doc_media_group_lock = asyncio.Lock()
+
 
 @router.message(F.document)
 async def handle_document(message: Message):
-    """Handle document uploads."""
+    """Handle document uploads (single or media group)."""
     
     # В группах документы обрабатываются иначе (или игнорируются)
     if message.chat.type in ("group", "supergroup"):
+        return
+    
+    # Check for media group (multiple files sent at once)
+    if message.media_group_id:
+        await _collect_doc_media_group(message)
         return
     
     user = message.from_user
@@ -219,6 +230,195 @@ async def handle_document(message: Message):
             )
 
 
+async def _collect_doc_media_group(message: Message):
+    """Collect documents from a media group, then process them all together."""
+    mg_id = message.media_group_id
+    
+    async with _doc_media_group_lock:
+        if mg_id not in _doc_media_groups:
+            _doc_media_groups[mg_id] = {"messages": [], "task": None}
+        
+        _doc_media_groups[mg_id]["messages"].append(message)
+        
+        # Cancel previous delayed task if exists
+        if _doc_media_groups[mg_id]["task"]:
+            _doc_media_groups[mg_id]["task"].cancel()
+        
+        # Schedule processing after 0.6s of no new docs
+        _doc_media_groups[mg_id]["task"] = asyncio.create_task(
+            _process_doc_media_group_delayed(mg_id)
+        )
+
+
+async def _process_doc_media_group_delayed(mg_id: str):
+    """Wait for all documents in a media group, then process."""
+    await asyncio.sleep(0.6)
+    
+    async with _doc_media_group_lock:
+        group_data = _doc_media_groups.pop(mg_id, None)
+    
+    if not group_data or not group_data["messages"]:
+        return
+    
+    msgs = group_data["messages"]
+    msgs.sort(key=lambda m: m.message_id)
+    
+    first_msg = msgs[0]
+    user_id = first_msg.from_user.id
+    
+    # Find caption (usually on first message)
+    caption = None
+    for m in msgs:
+        if m.caption:
+            caption = m.caption
+            break
+    
+    language = await user_service.get_user_language(user_id)
+    
+    # Check limits
+    has_limit, _, max_limit = await limit_service.check_limit(user_id, RequestType.DOCUMENT)
+    if not has_limit:
+        if language == "ru":
+            await first_msg.answer(f"⚠️ Лимит документов исчерпан ({max_limit}).")
+        else:
+            await first_msg.answer(f"⚠️ Document limit reached ({max_limit}).")
+        return
+    
+    # Filter supported documents
+    supported_docs = []
+    for m in msgs:
+        if m.document and document_service.is_supported(m.document.file_name or "doc"):
+            supported_docs.append(m)
+    
+    if not supported_docs:
+        if language == "ru":
+            await first_msg.answer("⚠️ Нет поддерживаемых форматов файлов в отправленной группе.")
+        else:
+            await first_msg.answer("⚠️ No supported file formats in the sent group.")
+        return
+    
+    if language == "ru":
+        status_msg = await first_msg.answer(
+            f"📄 Обрабатываю {len(supported_docs)} файл(ов)..."
+        )
+    else:
+        status_msg = await first_msg.answer(
+            f"📄 Processing {len(supported_docs)} file(s)..."
+        )
+    
+    start_time = time.time()
+    
+    try:
+        # Download and extract text from all documents
+        all_texts = []
+        all_filenames = []
+        all_images = []
+        
+        for m in supported_docs:
+            doc = m.document
+            filename = doc.file_name or "document"
+            
+            try:
+                file = await m.bot.get_file(doc.file_id)
+                file_bytes_io = await m.bot.download_file(file.file_path)
+                file_data = file_bytes_io.read() if hasattr(file_bytes_io, 'read') else file_bytes_io
+                
+                text, metadata, images = await document_service.process_document(
+                    file_data=file_data,
+                    filename=filename,
+                    max_pages=settings.max_pdf_pages,
+                    max_rows=settings.max_excel_rows,
+                    max_slides=settings.max_ppt_slides
+                )
+                
+                if text:
+                    all_texts.append(f"=== {filename} ===\n{text[:15000]}")
+                    all_filenames.append(filename)
+                if images:
+                    all_images.extend(images[:3])
+                    
+            except Exception as e:
+                logger.warning(f"Failed to process {filename} in media group", error=str(e))
+                all_texts.append(f"=== {filename} ===\n[Ошибка обработки: {str(e)[:100]}]")
+                all_filenames.append(filename)
+        
+        combined_text = "\n\n".join(all_texts)
+        combined_filenames = ", ".join(all_filenames)
+        
+        # Store combined context
+        if combined_text:
+            await redis_client.set_document_context(
+                user_id,
+                content=combined_text[:50000],
+                filename=combined_filenames
+            )
+        
+        # If there are images, analyze with vision
+        if all_images:
+            await analyze_document_with_vision(
+                message=first_msg,
+                progress_msg=status_msg,
+                user_id=user_id,
+                filename=combined_filenames,
+                images=all_images[:10],
+                language=language,
+                caption=caption
+            )
+        elif caption and caption.strip():
+            # Process with caption instruction immediately
+            await status_msg.delete()
+            await process_document_request(
+                message=first_msg,
+                user_id=user_id,
+                text=combined_text,
+                images=[],
+                request=caption,
+                filename=combined_filenames,
+                language=language
+            )
+        else:
+            # Show info and ask what to do
+            duration_ms = int((time.time() - start_time) * 1000)
+            
+            if language == "ru":
+                info_text = (
+                    f"📄 <b>Загружено {len(supported_docs)} файл(ов):</b>\n"
+                    f"{combined_filenames}\n\n"
+                    "Что сделать с документами?"
+                )
+            else:
+                info_text = (
+                    f"📄 <b>Loaded {len(supported_docs)} file(s):</b>\n"
+                    f"{combined_filenames}\n\n"
+                    "What would you like to do with the documents?"
+                )
+            
+            await status_msg.edit_text(
+                info_text,
+                reply_markup=get_document_actions_keyboard(language)
+            )
+        
+        # Save to conversation context
+        context_user_msg = f"[Пользователь отправил {len(supported_docs)} файл(ов): {combined_filenames}]"
+        if caption:
+            context_user_msg += f" с подписью: {caption}"
+        await redis_client.add_to_context(user_id, "user", context_user_msg)
+        
+        logger.info(
+            "Document media group processed",
+            user_id=user_id,
+            doc_count=len(supported_docs),
+            filenames=combined_filenames
+        )
+        
+    except Exception as e:
+        logger.error("Document media group error", user_id=user_id, error=str(e))
+        if language == "ru":
+            await status_msg.edit_text("❌ Ошибка при обработке файлов. Попробуйте ещё раз.")
+        else:
+            await status_msg.edit_text("❌ Error processing files. Please try again.")
+
+
 @router.message(F.photo)
 async def handle_photo(message: Message):
     """Handle photo uploads - analyze with GPT-4o Vision."""
@@ -338,11 +538,35 @@ async def analyze_document_with_vision(
         
         duration_ms = int((time.time() - start_time) * 1000)
         
-        # Truncate result if needed
-        if len(result) > 4000:
-            result = result[:4000] + "\n\n... (ответ обрезан)"
+        # Truncate result if needed — use long message splitting
+        await redis_client.set(f"user:{user_id}:last_response", result, ttl=3600)
         
-        await progress_msg.edit_text(result)
+        download_kb = get_download_keyboard(language)
+        html_result = convert_markdown_to_html(result)
+        chunks = split_text_for_telegram(html_result)
+        
+        # Edit progress message with first chunk
+        try:
+            markup = download_kb if len(chunks) == 1 else None
+            await progress_msg.edit_text(chunks[0], parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            try:
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', chunks[0])
+                await progress_msg.edit_text(plain, reply_markup=markup)
+            except Exception:
+                pass
+        
+        # Send remaining chunks
+        for i, chunk in enumerate(chunks[1:]):
+            is_last = (i == len(chunks) - 2)
+            markup = download_kb if is_last else None
+            try:
+                await message.answer(chunk, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', chunk)
+                await message.answer(plain, reply_markup=markup)
         
         # Store in document context for follow-up
         await redis_client.set_document_context(
@@ -350,6 +574,13 @@ async def analyze_document_with_vision(
             content=result,
             filename=filename
         )
+        
+        # Also save to conversation context so GPT remembers in text mode
+        context_user_msg = f"[Пользователь отправил изображение/документ: {filename}]"
+        if caption and caption.strip():
+            context_user_msg += f" с инструкцией: {caption}"
+        await redis_client.add_to_context(user_id, "user", context_user_msg)
+        await redis_client.add_to_context(user_id, "assistant", f"[✅ Бот проанализировал {filename}]: {result[:1500]}")
         
         # Increment usage and record
         await limit_service.increment_usage(user_id, RequestType.DOCUMENT)
@@ -528,11 +759,34 @@ async def process_document_request(
         
         duration_ms = int((time.time() - start_time) * 1000)
         
-        # Truncate if needed
-        if len(response) > 4000:
-            response = response[:4000] + "\n\n... (ответ обрезан)"
+        # Store for download and send split messages
+        await redis_client.set(f"user:{user_id}:last_response", response, ttl=3600)
         
-        await progress_msg.edit_text(response)
+        download_kb = get_download_keyboard(language)
+        
+        html_response = convert_markdown_to_html(response)
+        chunks = split_text_for_telegram(html_response)
+        
+        try:
+            markup = download_kb if len(chunks) == 1 else None
+            await progress_msg.edit_text(chunks[0], parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            try:
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', chunks[0])
+                await progress_msg.edit_text(plain, reply_markup=markup)
+            except Exception:
+                pass
+        
+        for i, chunk in enumerate(chunks[1:]):
+            is_last = (i == len(chunks) - 2)
+            markup = download_kb if is_last else None
+            try:
+                await message.answer(chunk, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', chunk)
+                await message.answer(plain, reply_markup=markup)
         
         # Increment usage and record
         await limit_service.increment_usage(user_id, RequestType.DOCUMENT)

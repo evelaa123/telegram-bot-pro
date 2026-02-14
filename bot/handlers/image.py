@@ -161,7 +161,80 @@ async def callback_image_edit(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "photo:animate")
+@router.callback_query(F.data == "image:variation")
+async def callback_image_variation(callback: CallbackQuery):
+    """
+    Handle image variation — analyze the generated image with Vision,
+    create a detailed prompt, then generate a new image.
+    """
+    user = callback.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    # Check limits
+    has_limit, current, max_limit = await limit_service.check_limit(
+        user.id, RequestType.IMAGE
+    )
+    
+    if not has_limit:
+        no_limit = f"⚠️ Лимит картинок исчерпан ({max_limit})" if language == "ru" else f"⚠️ Image limit reached ({max_limit})"
+        await callback.answer(no_limit, show_alert=True)
+        return
+    
+    # Get the original prompt from state
+    state = await redis_client.get_user_state(user.id)
+    original_prompt = ""
+    size = "1024x1024"
+    
+    if state and state.startswith("last_image_prompt:"):
+        parts = state.split(":", 2)
+        if len(parts) >= 3:
+            size = parts[1]
+            original_prompt = parts[2]
+    
+    if not original_prompt:
+        no_prompt = "Промпт не найден. Создайте новое изображение." if language == "ru" else "Prompt not found. Create a new image."
+        await callback.answer(no_prompt, show_alert=True)
+        return
+    
+    await callback.answer("🎨 Создаю вариацию..." if language == "ru" else "🎨 Creating variation...")
+    
+    # Generate a variation by modifying the prompt slightly
+    try:
+        variation_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an image prompt variation generator. "
+                    "Given an original image prompt, create a creative variation that keeps the core concept "
+                    "but changes style, composition, lighting, colors, or perspective. "
+                    "Output ONLY the new prompt, nothing else."
+                )
+            },
+            {"role": "user", "content": f"Create a variation of this image prompt:\n\n{original_prompt}"}
+        ]
+        
+        varied_prompt, _ = await ai_service.generate_text(
+            messages=variation_messages,
+            telegram_id=user.id,
+            max_tokens=300,
+            temperature=0.9
+        )
+        
+        varied_prompt = varied_prompt.strip().strip('"').strip("'")
+        
+        if not varied_prompt or len(varied_prompt) < 5:
+            varied_prompt = original_prompt + ", different artistic style"
+        
+        # Generate the variation image
+        await generate_image(callback.message, user.id, varied_prompt, size, is_callback=True)
+        
+    except Exception as e:
+        logger.error("Image variation error", user_id=user.id, error=str(e))
+        error_text = f"❌ Ошибка создания вариации: {str(e)[:100]}" if language == "ru" else f"❌ Variation error: {str(e)[:100]}"
+        await callback.message.answer(error_text)
+
+
+@router.callback_query(F.data == "image:animate")
 async def callback_photo_animate(callback: CallbackQuery):
     """Handle animate photo from photo analysis result."""
     user = callback.from_user
@@ -326,11 +399,19 @@ async def generate_image(
             pass
         
         # Send photo with action buttons
-        await message.answer_photo(
+        sent_msg = await message.answer_photo(
             photo=photo,
             caption=caption,
             reply_markup=get_image_actions_keyboard(language=language)
         )
+        
+        # Save the sent photo's file_id for animate button
+        if sent_msg.photo:
+            await redis_client.client.set(
+                f"user:{user_id}:last_photo_file_id",
+                sent_msg.photo[-1].file_id,
+                ex=3600
+            )
         
         # Store prompt for potential regeneration
         await redis_client.set_user_state(
@@ -349,6 +430,16 @@ async def generate_image(
             status=RequestStatus.SUCCESS
         )
         
+        # Save to conversation context so user can reference the image
+        await redis_client.add_to_context(
+            user_id, "user",
+            f"[Пользователь попросил сгенерировать изображение: {prompt[:200]}]"
+        )
+        await redis_client.add_to_context(
+            user_id, "assistant",
+            f"[✅ Бот успешно сгенерировал изображение по описанию: {revised_prompt[:200]}]"
+        )
+        
         logger.info(
             "Image generated",
             user_id=user_id,
@@ -360,6 +451,16 @@ async def generate_image(
     except Exception as e:
         animation_task.cancel()
         logger.error("Image generation error", user_id=user_id, error=str(e))
+        
+        # Save failure to context so AI knows generation failed
+        await redis_client.add_to_context(
+            user_id, "user",
+            f"[Пользователь попросил сгенерировать изображение: {prompt[:200]}]"
+        )
+        await redis_client.add_to_context(
+            user_id, "assistant",
+            f"[❌ Генерация изображения не удалась: {str(e)[:100]}]"
+        )
         
         # Record failed request
         await limit_service.record_request(

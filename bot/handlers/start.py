@@ -1,6 +1,7 @@
 """
 Start and help command handlers.
 """
+import hashlib
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
@@ -9,13 +10,21 @@ from bot.keyboards.main import get_main_menu_keyboard
 from bot.services.user_service import user_service
 from database.redis_client import redis_client
 from config import settings
+import structlog
 
+logger = structlog.get_logger()
 router = Router()
+
+
+def generate_referral_code(telegram_id: int) -> str:
+    """Generate a unique referral code from telegram_id."""
+    raw = f"ref_{telegram_id}_{settings.jwt_secret_key[:8]}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    """Handle /start command."""
+    """Handle /start command with optional deep_link referral."""
     user = message.from_user
     
     # Get user's language preference
@@ -24,6 +33,28 @@ async def cmd_start(message: Message):
     # Clear any existing state
     await redis_client.clear_user_state(user.id)
     await redis_client.clear_context(user.id)
+    
+    # ---- Parse deep_link for referral ----
+    args = message.text.split(maxsplit=1)
+    deep_link = args[1].strip() if len(args) > 1 else ""
+    
+    if deep_link.startswith("ref_"):
+        referral_code = deep_link
+        try:
+            # Find referrer by code
+            referrer = await user_service.find_user_by_referral_code(referral_code)
+            if referrer and referrer.telegram_id != user.id:
+                # Set referred_by if not already set
+                await user_service.set_referral(user.id, referrer.telegram_id, referral_code)
+                
+                logger.info(
+                    "Referral registered",
+                    user_id=user.id,
+                    referrer_id=referrer.telegram_id,
+                    code=referral_code
+                )
+        except Exception as e:
+            logger.error("Referral processing error", error=str(e))
     
     if language == "ru":
         welcome_text = (
@@ -70,15 +101,23 @@ async def cmd_help(message: Message):
             "/image — режим генерации изображений\n"
             "/video — режим генерации видео\n"
             "/limits — показать ваши лимиты\n"
-            "/settings — настройки\n\n"
+            "/settings — настройки\n"
+            "/about — полное описание возможностей (можно переслать)\n\n"
             
             "<b>Текстовые запросы:</b>\n"
             "Просто напишите любой вопрос или задачу — я отвечу.\n"
-            "Контекст сохраняется в течение 30 минут.\n\n"
+            "Контекст сохраняется в течение 30 минут.\n"
+            "🌐 Бот сам ищет в интернете, когда нужна актуальная информация.\n\n"
             
             "<b>Генерация изображений:</b>\n"
             "Нажмите «🖼 Изображение» или /image, затем опишите картинку.\n"
             "Доступны размеры: квадрат, горизонтальный, вертикальный.\n\n"
+            
+            "<b>Редактирование фото:</b>\n"
+            "Отправьте фото + подпись-инструкцию → «✏️ Ещё раз» для серии правок.\n\n"
+            
+            "<b>Несколько фото / файлов:</b>\n"
+            "Отправьте альбом фото или несколько документов — бот обработает вместе.\n\n"
             
             "<b>Генерация видео:</b>\n"
             "Нажмите «🎬 Видео» или /video, выберите модель и опишите видео.\n"
@@ -102,15 +141,23 @@ async def cmd_help(message: Message):
             "/image — image generation mode\n"
             "/video — video generation mode\n"
             "/limits — show your limits\n"
-            "/settings — settings\n\n"
+            "/settings — settings\n"
+            "/about — full feature guide (can be forwarded)\n\n"
             
             "<b>Text Requests:</b>\n"
             "Just write any question or task — I'll answer.\n"
-            "Context is saved for 30 minutes.\n\n"
+            "Context is saved for 30 minutes.\n"
+            "🌐 The bot automatically searches the web when current info is needed.\n\n"
             
             "<b>Image Generation:</b>\n"
             "Click '🖼 Image' or /image, then describe the picture.\n"
             "Available sizes: square, horizontal, vertical.\n\n"
+            
+            "<b>Photo Editing:</b>\n"
+            "Send photo + caption instruction → '✏️ Edit Again' for a series of edits.\n\n"
+            
+            "<b>Multiple Photos / Files:</b>\n"
+            "Send a photo album or multiple documents — the bot processes them together.\n\n"
             
             "<b>Video Generation:</b>\n"
             "Click '🎬 Video' or /video, choose model and describe video.\n"
@@ -193,9 +240,9 @@ async def btn_settings(message: Message):
     await show_settings(message)
 
 
-@router.message(F.text.in_({"💬 Текст", "💬 Text"}))
+@router.message(F.text.in_({"💬 Текст и документы", "💬 Text & Documents", "💬 Текст", "💬 Text"}))
 async def btn_text_mode(message: Message):
-    """Handle text mode button - just confirm mode."""
+    """Handle text & documents mode button - just confirm mode."""
     user = message.from_user
     language = await user_service.get_user_language(user.id)
     
@@ -204,15 +251,19 @@ async def btn_text_mode(message: Message):
     
     if language == "ru":
         text = (
-            "💬 <b>Текстовый режим активен</b>\n\n"
+            "💬 <b>Текст и документы — режим активен</b>\n\n"
             "Просто напишите ваш вопрос или задачу, и я отвечу.\n"
-            "Я помню контекст последних сообщений."
+            "Я помню контекст последних сообщений.\n\n"
+            "📄 Также вы можете отправить документ (PDF, Word, Excel, PowerPoint)\n"
+            "или изображение с текстом — я проанализирую содержимое."
         )
     else:
         text = (
-            "💬 <b>Text mode active</b>\n\n"
+            "💬 <b>Text & Documents — mode active</b>\n\n"
             "Just write your question or task, and I'll respond.\n"
-            "I remember the context of recent messages."
+            "I remember the context of recent messages.\n\n"
+            "📄 You can also send a document (PDF, Word, Excel, PowerPoint)\n"
+            "or an image with text — I'll analyze the content."
         )
     
     await message.answer(text)
@@ -321,3 +372,172 @@ async def btn_subscription(message: Message):
         subscription_text,
         reply_markup=get_subscription_keyboard(language)
     )
+
+
+@router.message(Command("about"))
+async def cmd_about(message: Message):
+    """
+    Handle /about command — send a ready-to-share summary of bot capabilities.
+    Can be forwarded to others or used in channels.
+    """
+    user = message.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    # Get bot username for the link
+    bot_info = await message.bot.get_me()
+    bot_username = bot_info.username
+    
+    if language == "ru":
+        about_text = (
+            "🤖 <b>ИИ-ассистент — возможности бота</b>\n\n"
+            
+            "💬 <b>Текст и вопросы</b>\n"
+            "Просто напишите вопрос — бот ответит с помощью ИИ.\n"
+            "Контекст диалога сохраняется 30 мин. Команда /new — сброс.\n\n"
+            
+            "🌐 <b>Поиск в интернете</b>\n"
+            "Бот сам решает, когда нужен поиск в интернете (погода, курсы, новости).\n"
+            "Источники прикрепляются автоматически.\n\n"
+            
+            "🖼 <b>Генерация изображений</b>\n"
+            "Нажмите «🖼 Изображение» или /image → выберите размер → опишите картинку.\n\n"
+            
+            "✏️ <b>Редактирование фото</b>\n"
+            "Отправьте фото с подписью-инструкцией (например: «Добавь тень»).\n"
+            "После редактирования нажмите «✏️ Ещё раз» или просто пишите новую инструкцию.\n\n"
+            
+            "📸 <b>Несколько фото (Media Group)</b>\n"
+            "Отправьте несколько фото одновременно — бот проанализирует их вместе.\n"
+            "Добавьте подпись к альбому — бот выполнит инструкцию.\n\n"
+            
+            "🎬 <b>Генерация видео</b>\n"
+            "Нажмите «🎬 Видео» или /video → выберите модель → опишите видео.\n"
+            "Можно оживить фото (кнопка «🎞 Оживить фото»).\n\n"
+            
+            "🎤 <b>Голосовые сообщения</b>\n"
+            "Отправьте голосовое — бот распознает и ответит.\n"
+            "Работает как текст: голосом можно рисовать, редактировать фото, задавать вопросы.\n\n"
+            
+            "📄 <b>Документы и файлы</b>\n"
+            "Отправьте PDF, Word, Excel, PowerPoint, текстовый файл или изображение.\n"
+            "Можно отправить сразу несколько файлов — бот обработает вместе.\n"
+            "После загрузки задавайте вопросы по содержимому.\n\n"
+            
+            "📊 <b>Презентации</b>\n"
+            "Скажите голосом или напишите «Создай презентацию про...» — бот сгенерирует .pptx.\n\n"
+            
+            "⚙️ <b>Команды:</b>\n"
+            "/start — перезапуск  •  /new — новый диалог\n"
+            "/image — картинка  •  /video — видео\n"
+            "/limits — лимиты  •  /settings — настройки\n"
+            "/about — эта справка  •  /referral — реферальная ссылка\n\n"
+            
+            f"▶️ Начать: @{bot_username}"
+        )
+    else:
+        about_text = (
+            "🤖 <b>AI Assistant — Bot Features</b>\n\n"
+            
+            "💬 <b>Text & Questions</b>\n"
+            "Just write a question — the bot answers using AI.\n"
+            "Dialog context is saved for 30 min. /new to reset.\n\n"
+            
+            "🌐 <b>Web Search</b>\n"
+            "The bot automatically searches the web when needed (weather, prices, news).\n"
+            "Sources are attached automatically.\n\n"
+            
+            "🖼 <b>Image Generation</b>\n"
+            "Tap '🖼 Image' or /image → choose size → describe the picture.\n\n"
+            
+            "✏️ <b>Photo Editing</b>\n"
+            "Send a photo with a caption instruction (e.g., 'Add a shadow').\n"
+            "After editing, tap '✏️ Edit Again' or just type a new instruction.\n\n"
+            
+            "📸 <b>Multiple Photos (Media Group)</b>\n"
+            "Send several photos at once — the bot analyzes them together.\n"
+            "Add a caption to the album — the bot follows the instruction.\n\n"
+            
+            "🎬 <b>Video Generation</b>\n"
+            "Tap '🎬 Video' or /video → choose model → describe the video.\n"
+            "You can animate photos ('🎞 Animate Photo' button).\n\n"
+            
+            "🎤 <b>Voice Messages</b>\n"
+            "Send a voice message — the bot transcribes and responds.\n"
+            "Works like text: draw, edit photos, ask questions by voice.\n\n"
+            
+            "📄 <b>Documents & Files</b>\n"
+            "Send PDF, Word, Excel, PowerPoint, text files, or images.\n"
+            "You can send multiple files at once — the bot processes them together.\n"
+            "Ask questions about the content after uploading.\n\n"
+            
+            "📊 <b>Presentations</b>\n"
+            "Say or type 'Create a presentation about...' — the bot generates a .pptx.\n\n"
+            
+            "⚙️ <b>Commands:</b>\n"
+            "/start — restart  •  /new — new dialog\n"
+            "/image — picture  •  /video — video\n"
+            "/limits — limits  •  /settings — settings\n"
+            "/about — this guide  •  /referral — referral link\n\n"
+            
+            f"▶️ Start: @{bot_username}"
+        )
+    
+    await message.answer(about_text, parse_mode="HTML")
+
+
+# ============================================
+# REFERRAL SYSTEM
+# ============================================
+
+@router.message(Command("referral"))
+async def cmd_referral(message: Message):
+    """Handle /referral command — show referral link and stats."""
+    user = message.from_user
+    language = await user_service.get_user_language(user.id)
+    
+    # Ensure user has a referral code
+    code = await user_service.get_or_create_referral_code(user.id)
+    
+    if not code:
+        code = generate_referral_code(user.id)
+        await user_service.save_referral_code(user.id, code)
+    
+    # Get bot username for the link
+    bot_info = await message.bot.get_me()
+    bot_username = bot_info.username
+    
+    referral_link = f"https://t.me/{bot_username}?start=ref_{code}"
+    
+    # Get referral stats
+    stats = await user_service.get_referral_stats(user.id)
+    invited_count = stats.get("invited_count", 0)
+    total_earnings = stats.get("total_earnings", 0)
+    
+    if language == "ru":
+        text = (
+            "🎁 <b>Реферальная программа</b>\n\n"
+            f"📎 Ваша реферальная ссылка:\n"
+            f"<code>{referral_link}</code>\n\n"
+            "💰 <b>Как это работает:</b>\n"
+            "• Поделитесь ссылкой с друзьями\n"
+            "• Когда друг оформит подписку, вы получите 15% кешбэк\n"
+            "• Кешбэк начисляется при каждой оплате друга\n\n"
+            f"👥 Приглашено: <b>{invited_count}</b>\n"
+            f"💵 Заработано: <b>{total_earnings:.2f} ₽</b>\n\n"
+            "📲 Нажмите на ссылку чтобы скопировать"
+        )
+    else:
+        text = (
+            "🎁 <b>Referral Program</b>\n\n"
+            f"📎 Your referral link:\n"
+            f"<code>{referral_link}</code>\n\n"
+            "💰 <b>How it works:</b>\n"
+            "• Share the link with friends\n"
+            "• When a friend subscribes, you get 15% cashback\n"
+            "• Cashback is credited for each friend's payment\n\n"
+            f"👥 Invited: <b>{invited_count}</b>\n"
+            f"💵 Earned: <b>{total_earnings:.2f} ₽</b>\n\n"
+            "📲 Tap the link to copy"
+        )
+    
+    await message.answer(text, parse_mode="HTML")
