@@ -80,6 +80,11 @@ class User(Base):
     
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
+    # Referral system
+    referred_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)  # telegram_id of referrer
+    referral_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, unique=True)
+    referral_earnings: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0, nullable=False)  # total earnings in RUB
+    
     # Subscription fields
     subscription_type: Mapped[SubscriptionType] = mapped_column(
         Enum(SubscriptionType),

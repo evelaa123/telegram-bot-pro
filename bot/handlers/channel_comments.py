@@ -18,7 +18,8 @@ from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
 from bot.services.subscription_service import subscription_service
 from bot.services.settings_service import settings_service
-from bot.keyboards.inline import get_subscription_keyboard, get_image_size_keyboard
+from bot.keyboards.inline import get_subscription_keyboard, get_image_size_keyboard, get_download_keyboard
+from bot.utils.helpers import convert_markdown_to_html, split_text_for_telegram, send_long_message, send_as_file
 from config import settings as config_settings
 from database.redis_client import redis_client
 from database.models import RequestType, RequestStatus
@@ -821,15 +822,21 @@ async def analyze_photo_response(
             telegram_id=user_id
         )
 
-        if len(result) > 4000:
-            result = result[:4000] + "..."
+        # Split long result
+        html_result = convert_markdown_to_html(result)
+        chunks = split_text_for_telegram(html_result)
 
         try:
             await status_msg.delete()
         except Exception:
             pass
 
-        await send_reply(message, f"🔍 {result}")
+        for chunk in chunks:
+            try:
+                await send_reply(message, chunk, parse_mode="HTML")
+            except Exception:
+                plain = re.sub(r'<[^>]+>', '', chunk)
+                await send_reply(message, plain)
 
         await limit_service.increment_usage(user_id, RequestType.DOCUMENT)
         await limit_service.record_request(
@@ -929,19 +936,7 @@ async def generate_image_response(
         )
 
 
-def _convert_markdown_to_html(text: str) -> str:
-    """Convert Markdown to Telegram HTML (same as text.py)."""
-    text = text.replace('&', '&amp;')
-    text = text.replace('<', '&lt;')
-    text = text.replace('>', '&gt;')
-    text = re.sub(r'```(\w*)\n?(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
-    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
-    text = re.sub(r'\*\*([^*]+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'__([^_]+?)__', r'<b>\1</b>', text)
-    text = re.sub(r'(?<!\*)\*([^*\n]+?)\*(?!\*)', r'<i>\1</i>', text)
-    text = re.sub(r'(?<!_)_([^_\n]+?)_(?!_)', r'<i>\1</i>', text)
-    text = re.sub(r'~~([^~]+?)~~', r'<s>\1</s>', text)
-    return text
+# _convert_markdown_to_html removed — using convert_markdown_to_html from bot.utils.helpers
 
 
 async def _get_group_context(chat_id: int, user_id: int):
@@ -1040,7 +1035,7 @@ async def generate_text_response(message: Message, user_id: int, prompt: str, la
                     if len(display_text) > 4000:
                         display_text = display_text[:4000] + "..."
 
-                    html_text = _convert_markdown_to_html(display_text)
+                    html_text = convert_markdown_to_html(display_text)
 
                     try:
                         await thinking_msg.edit_text(html_text, parse_mode="HTML")
@@ -1057,19 +1052,34 @@ async def generate_text_response(message: Message, user_id: int, prompt: str, la
                     if "message is not modified" not in str(e).lower():
                         logger.warning("Stream edit fail", error=str(e))
 
-        # Final update
+        # Final update — split long response into multiple messages
         if full_response.strip():
-            try:
-                display_text = full_response
-                if len(display_text) > 4000:
-                    display_text = display_text[:4000] + "\n\n... (ответ обрезан)"
-                html_text = _convert_markdown_to_html(display_text)
-                try:
-                    await thinking_msg.edit_text(html_text, parse_mode="HTML")
-                except Exception:
-                    await thinking_msg.edit_text(display_text)
-            except Exception:
-                pass
+            # Store for download button
+            await redis_client.set(f"user:{user_id}:last_response", full_response, ttl=3600)
+            
+            download_kb = get_download_keyboard(language)
+            html_text = convert_markdown_to_html(full_response)
+            chunks = split_text_for_telegram(html_text)
+            
+            for i, chunk in enumerate(chunks):
+                is_last = (i == len(chunks) - 1)
+                markup = download_kb if is_last else None
+                
+                if i == 0:
+                    try:
+                        await thinking_msg.edit_text(chunk, parse_mode="HTML", reply_markup=markup)
+                    except Exception:
+                        try:
+                            plain = re.sub(r'<[^>]+>', '', chunk)
+                            await thinking_msg.edit_text(plain, reply_markup=markup)
+                        except Exception:
+                            await send_reply(message, chunk, parse_mode="HTML", reply_markup=markup)
+                else:
+                    try:
+                        await send_reply(message, chunk, parse_mode="HTML", reply_markup=markup)
+                    except Exception:
+                        plain = re.sub(r'<[^>]+>', '', chunk)
+                        await send_reply(message, plain, reply_markup=markup)
 
         duration_ms = int((time.time() - start_time) * 1000)
 
@@ -1157,17 +1167,22 @@ async def transcribe_voice_response(
         else:
             result_text = f"📝 <b>Transcribed text:</b>\n\n{text}"
 
-        if len(result_text) > 4000:
-            result_text = result_text[:4000] + "..."
+        html_result = convert_markdown_to_html(result_text)
+        chunks = split_text_for_telegram(html_result)
 
         try:
-            await status_msg.edit_text(result_text, parse_mode="HTML")
+            first_chunk = chunks[0] if chunks else result_text
+            await status_msg.edit_text(first_chunk, parse_mode="HTML")
         except Exception:
             try:
                 await status_msg.delete()
             except Exception:
                 pass
-            await send_reply(message, result_text, parse_mode="HTML")
+            await send_reply(message, chunks[0] if chunks else result_text, parse_mode="HTML")
+        
+        # Send remaining chunks
+        for chunk in chunks[1:]:
+            await send_reply(message, chunk, parse_mode="HTML")
 
         await limit_service.increment_usage(user_id, RequestType.VOICE)
         await limit_service.record_request(
@@ -1247,17 +1262,22 @@ async def transcribe_audio_response(
         else:
             result_text = f"📝 <b>Transcribed text from {filename}:</b>\n\n{text}"
 
-        if len(result_text) > 4000:
-            result_text = result_text[:4000] + "..."
+        html_result = convert_markdown_to_html(result_text)
+        chunks = split_text_for_telegram(html_result)
 
         try:
-            await status_msg.edit_text(result_text, parse_mode="HTML")
+            first_chunk = chunks[0] if chunks else result_text
+            await status_msg.edit_text(first_chunk, parse_mode="HTML")
         except Exception:
             try:
                 await status_msg.delete()
             except Exception:
                 pass
-            await send_reply(message, result_text, parse_mode="HTML")
+            await send_reply(message, chunks[0] if chunks else result_text, parse_mode="HTML")
+        
+        # Send remaining chunks
+        for chunk in chunks[1:]:
+            await send_reply(message, chunk, parse_mode="HTML")
 
         await limit_service.increment_usage(user_id, RequestType.VOICE)
         await limit_service.record_request(
@@ -1357,15 +1377,21 @@ async def analyze_document_response(
             telegram_id=user_id
         )
 
-        if len(response) > 4000:
-            response = response[:4000] + "..."
+        # Split long response
+        html_response = convert_markdown_to_html(response)
+        chunks = split_text_for_telegram(html_response)
 
         try:
             await status_msg.delete()
         except Exception:
             pass
 
-        await send_reply(message, f"📄 {response}")
+        for chunk in chunks:
+            try:
+                await send_reply(message, chunk, parse_mode="HTML")
+            except Exception:
+                plain = re.sub(r'<[^>]+>', '', chunk)
+                await send_reply(message, plain)
 
         await limit_service.increment_usage(user_id, RequestType.DOCUMENT)
         await limit_service.record_request(

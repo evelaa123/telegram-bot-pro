@@ -17,7 +17,7 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
     """
     texts = {
         "ru": {
-            "text": "💬 Текст",
+            "text": "💬 Текст и документы",
             "image": "🖼 Изображение",
             "video": "🎬 Видео",
             "voice": "🎤 Голос",
@@ -30,7 +30,7 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
             "new_dialog": "🔄 Новый диалог"
         },
         "en": {
-            "text": "💬 Text",
+            "text": "💬 Text & Documents",
             "image": "🖼 Image",
             "video": "🎬 Video",
             "voice": "🎤 Voice",
@@ -48,7 +48,7 @@ def get_main_menu_keyboard(language: str = "ru") -> ReplyKeyboardMarkup:
     
     builder = ReplyKeyboardBuilder()
     
-    # Row 1: Text, Image
+    # Row 1: Text & Documents, Image
     builder.add(KeyboardButton(text=t["text"]))
     builder.add(KeyboardButton(text=t["image"]))
     

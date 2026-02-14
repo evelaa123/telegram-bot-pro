@@ -1,15 +1,19 @@
 """
 Voice message handler.
-Handles Whisper and Qwen ASR speech recognition.
+Handles Whisper and Qwen ASR speech recognition with smart intent routing.
+Voice commands can trigger image generation, video, text, presentation, etc.
 """
 import io
+import re
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatAction
 
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.services.limit_service import limit_service
+from bot.utils.helpers import convert_markdown_to_html, split_text_for_telegram, send_long_message, edit_or_send_long, send_as_file
+from bot.keyboards.inline import get_download_keyboard
 from database.redis_client import redis_client
 from database.models import RequestType, RequestStatus
 from config import settings
@@ -17,6 +21,329 @@ import structlog
 
 logger = structlog.get_logger()
 router = Router()
+
+
+# ============================================
+# VOICE INTENT CLASSIFIER
+# ============================================
+
+async def classify_voice_intent(text: str, user_id: int) -> dict:
+    """
+    Classify transcribed voice text into an intent.
+    Uses a lightweight AI call to determine what the user wants.
+    
+    Returns:
+        dict with keys: intent (IMAGE|VIDEO|TEXT|PRESENTATION|COMMAND|DOCUMENT), 
+                        prompt (cleaned prompt text),
+                        command (if COMMAND intent, which command)
+    """
+    # Quick keyword-based check first (no AI call needed)
+    text_lower = text.lower().strip()
+    
+    # Command patterns
+    command_patterns = {
+        "new_dialog": [
+            "новый диалог", "очисти контекст", "начни заново", "сбрось контекст",
+            "new dialog", "clear context", "start over", "reset context"
+        ],
+        "limits": [
+            "мои лимиты", "покажи лимиты", "сколько запросов", "сколько осталось",
+            "my limits", "show limits", "how many requests"
+        ],
+        "help": [
+            "помощь", "что ты умеешь", "справка",
+            "help", "what can you do"
+        ],
+        "settings": [
+            "настройки", "settings"
+        ],
+    }
+    
+    for cmd, patterns in command_patterns.items():
+        for pattern in patterns:
+            if pattern in text_lower:
+                return {"intent": "COMMAND", "prompt": text, "command": cmd}
+    
+    # Image generation patterns
+    image_patterns = [
+        r"(?:сгенерируй|нарисуй|создай|сделай|покажи)\s+(?:мне\s+)?(?:картинк|изображени|фото|пикч|арт)",
+        r"(?:generate|draw|create|make|show)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|art)",
+        r"(?:нарисуй|сгенерируй|сгенери)\s+",
+        r"(?:draw|generate)\s+",
+    ]
+    for pat in image_patterns:
+        if re.search(pat, text_lower):
+            # Extract prompt after the trigger phrase
+            cleaned = text
+            for trigger in ["нарисуй мне", "нарисуй", "сгенерируй мне", "сгенерируй", 
+                          "создай картинку", "создай изображение", "сделай картинку",
+                          "draw me", "draw", "generate me", "generate", "create image",
+                          "make picture"]:
+                cleaned = re.sub(rf'(?i)^{re.escape(trigger)}\s*', '', cleaned).strip()
+            return {"intent": "IMAGE", "prompt": cleaned if cleaned else text, "command": None}
+    
+    # Video patterns
+    video_patterns = [
+        r"(?:создай|сгенерируй|сделай)\s+(?:мне\s+)?видео",
+        r"(?:create|generate|make)\s+(?:me\s+)?(?:a\s+)?video",
+    ]
+    for pat in video_patterns:
+        if re.search(pat, text_lower):
+            cleaned = text
+            for trigger in ["создай видео", "сгенерируй видео", "сделай видео",
+                          "create video", "generate video", "make video"]:
+                cleaned = re.sub(rf'(?i)^{re.escape(trigger)}\s*', '', cleaned).strip()
+            return {"intent": "VIDEO", "prompt": cleaned if cleaned else text, "command": None}
+    
+    # Presentation patterns
+    pres_patterns = [
+        r"(?:создай|сделай|сгенерируй)\s+(?:мне\s+)?презентаци",
+        r"(?:create|make|generate)\s+(?:me\s+)?(?:a\s+)?presentation",
+    ]
+    for pat in pres_patterns:
+        if re.search(pat, text_lower):
+            cleaned = text
+            for trigger in ["создай презентацию", "сделай презентацию", "сгенерируй презентацию",
+                          "создай мне презентацию", "create presentation", "make presentation",
+                          "generate presentation", "create a presentation"]:
+                cleaned = re.sub(rf'(?i)^{re.escape(trigger)}\s*', '', cleaned).strip()
+            return {"intent": "PRESENTATION", "prompt": cleaned if cleaned else text, "command": None}
+    
+    # AI classification ONLY for PRESENTATION (not for IMAGE/VIDEO to avoid
+    # costly false-positives like accidentally generating an image).
+    # For IMAGE and VIDEO, we rely exclusively on keyword patterns above.
+    if len(text) < 200:
+        try:
+            classify_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the user's voice command intent. Reply with ONLY one word:\n"
+                        "PRESENTATION - user EXPLICITLY wants to create a presentation/slides\n"
+                        "TEXT - everything else (questions, explanations, requests)\n"
+                        "If unsure, reply TEXT."
+                    )
+                },
+                {"role": "user", "content": text[:200]}
+            ]
+            result, _ = await ai_service.generate_text(
+                messages=classify_messages,
+                telegram_id=user_id,
+                max_tokens=10,
+                temperature=0.1
+            )
+            intent = result.strip().upper()
+            if intent == "PRESENTATION":
+                return {"intent": "PRESENTATION", "prompt": text, "command": None}
+        except Exception as e:
+            logger.warning("Voice intent classification failed", error=str(e))
+    
+    # Default to TEXT — never accidentally trigger image/video generation
+    return {"intent": "TEXT", "prompt": text, "command": None}
+
+
+async def _route_voice_to_active_state(
+    message: Message,
+    user_id: int,
+    transcribed_text: str,
+    state: str,
+    language: str
+) -> bool:
+    """
+    If user has an active prompt-waiting state (video_prompt, image_prompt, etc.),
+    route the transcribed voice text directly to that handler.
+    Returns True if routed, False if state was not a prompt-waiting state.
+    """
+    if state.startswith("video_prompt:"):
+        parts = state.split(":")
+        if len(parts) >= 3:
+            model = parts[1]
+            duration = int(parts[2])
+            from bot.handlers.video import queue_video_generation
+            await queue_video_generation(message, user_id, transcribed_text, model, duration)
+            return True
+    
+    elif state.startswith("video_remix:"):
+        video_id = state.split(":")[1]
+        from bot.handlers.video import queue_video_remix
+        await queue_video_remix(message, user_id, video_id, transcribed_text)
+        return True
+    
+    elif state.startswith("image_prompt:"):
+        size = state.split(":")[1]
+        from bot.handlers.image import generate_image
+        await generate_image(message, user_id, transcribed_text, size)
+        return True
+    
+    elif state.startswith("animate_photo:"):
+        file_id = state.split(":", 1)[1]
+        from bot.handlers.video import queue_animate_photo
+        prompt = transcribed_text if transcribed_text.strip() not in (".", "") else \
+            "Animate this photo with gentle natural motion, subtle camera movement"
+        await queue_animate_photo(message, user_id, file_id, prompt)
+        return True
+    
+    elif state.startswith("long_video_prompt:"):
+        parts = state.split(":")
+        model = parts[1] if len(parts) > 1 else "sora-2"
+        from bot.handlers.video import queue_long_video_generation
+        await queue_long_video_generation(message, user_id, transcribed_text, model)
+        return True
+    
+    elif state == "document_question":
+        doc_context = await redis_client.get_document_context(user_id)
+        if doc_context:
+            from bot.handlers.document import process_document_request
+            await process_document_request(
+                message=message,
+                user_id=user_id,
+                text=doc_context["content"],
+                images=[],
+                request=transcribed_text,
+                filename=doc_context["filename"],
+                language=language
+            )
+            return True
+    
+    elif state.startswith("photo_edit_chain:"):
+        file_id = state.split(":", 1)[1]
+        try:
+            file = await message.bot.get_file(file_id)
+            file_bytes_io = await message.bot.download_file(file.file_path)
+            image_data = file_bytes_io.read() if hasattr(file_bytes_io, 'read') else file_bytes_io
+            
+            from bot.handlers.photo import _handle_photo_edit_from_bytes
+            await _handle_photo_edit_from_bytes(
+                message=message,
+                user_id=user_id,
+                image_data=image_data,
+                caption=transcribed_text,
+                language=language
+            )
+            return True
+        except Exception as e:
+            logger.error("Voice chain photo edit error", user_id=user_id, error=str(e))
+            await redis_client.clear_user_state(user_id)
+    
+    return False
+
+
+async def _route_voice_intent(
+    message: Message,
+    user_id: int,
+    transcribed_text: str,
+    language: str
+):
+    """
+    Route transcribed voice text to the appropriate handler based on intent.
+    """
+    intent_result = await classify_voice_intent(transcribed_text, user_id)
+    intent = intent_result["intent"]
+    prompt = intent_result["prompt"]
+    command = intent_result.get("command")
+    
+    logger.info(
+        "Voice intent classified",
+        user_id=user_id,
+        intent=intent,
+        command=command,
+        text_preview=transcribed_text[:50]
+    )
+    
+    if intent == "COMMAND":
+        if command == "new_dialog":
+            await redis_client.clear_context(user_id)
+            await redis_client.clear_document_context(user_id)
+            await redis_client.clear_user_state(user_id)
+            text = "🔄 Контекст очищен." if language == "ru" else "🔄 Context cleared."
+            await message.answer(text)
+        elif command == "limits":
+            limits_text = await limit_service.get_limits_text(user_id, language)
+            await message.answer(limits_text, parse_mode="HTML")
+        elif command == "help":
+            from bot.handlers.start import cmd_help
+            await cmd_help(message)
+        elif command == "settings":
+            from bot.handlers.settings import show_settings
+            await show_settings(message)
+        return
+    
+    elif intent == "IMAGE":
+        # Start image generation flow
+        has_limit, _, max_limit = await limit_service.check_limit(user_id, RequestType.IMAGE)
+        if not has_limit:
+            text = f"⚠️ Лимит картинок исчерпан ({max_limit})" if language == "ru" else f"⚠️ Image limit reached ({max_limit})"
+            await message.answer(text)
+            return
+        
+        from bot.handlers.image import generate_image
+        # Use default size
+        await generate_image(message, user_id, prompt, "1024x1024")
+        return
+    
+    elif intent == "VIDEO":
+        from bot.keyboards.inline import get_video_model_keyboard
+        
+        if language == "ru":
+            text = (
+                f"🎬 <b>Генерация видео</b>\n\n"
+                f"📝 Промпт: <i>{prompt[:200]}</i>\n\n"
+                "Выберите модель:"
+            )
+        else:
+            text = (
+                f"🎬 <b>Video Generation</b>\n\n"
+                f"📝 Prompt: <i>{prompt[:200]}</i>\n\n"
+                "Choose model:"
+            )
+        
+        # Store prompt for video flow
+        await redis_client.set_user_state(user_id, f"video_voice_prompt:{prompt[:500]}")
+        await message.answer(text, parse_mode="HTML", reply_markup=get_video_model_keyboard(language))
+        return
+    
+    elif intent == "PRESENTATION":
+        # Generate presentation directly from voice prompt
+        from bot.services.limit_service import limit_service as ls
+        has_limit, _, max_limit = await ls.check_limit(user_id, RequestType.PRESENTATION)
+        if not has_limit:
+            await message.answer(
+                f"⚠️ Лимит презентаций исчерпан ({max_limit})" if language == "ru"
+                else f"⚠️ Presentation limit reached ({max_limit})"
+            )
+            return
+        
+        from bot.services.presentation_service import presentation_service
+        progress_msg = await message.answer(
+            "📊 Генерирую презентацию..." if language == "ru" else "📊 Generating presentation..."
+        )
+        try:
+            pptx_bytes, info = await presentation_service.generate_presentation(
+                topic=prompt,
+                slides_count=7,
+                style="business",
+                include_images=True,
+                language=language,
+            )
+            await limit_service.increment_usage(user_id, RequestType.PRESENTATION)
+            from aiogram.types import BufferedInputFile
+            filename = f"presentation_{prompt[:30].replace(' ', '_')}.pptx"
+            document = BufferedInputFile(pptx_bytes, filename=filename)
+            await progress_msg.delete()
+            caption = f"✅ <b>Презентация готова!</b>\n📝 {info.get('title', prompt)}"
+            await message.answer_document(document, caption=caption, parse_mode="HTML")
+        except Exception as e:
+            logger.error("Voice presentation generation error", error=str(e), user_id=user_id)
+            await progress_msg.edit_text(f"❌ Ошибка: {str(e)[:100]}")
+        return
+    
+    # Default: TEXT — use auto-process
+    await _auto_process_transcribed_text(
+        message=message,
+        user_id=user_id,
+        text=transcribed_text,
+        language=language
+    )
 
 
 @router.message(F.voice)
@@ -100,14 +427,50 @@ async def handle_voice_message(message: Message):
                 )
             return
         
+        # Clean Whisper special tokens and stray HTML-like tags from transcription
+        import re as _re
+        text = _re.sub(r'<\|[^>]*\|>', '', text)  # Whisper tokens like <|en|>, <|transcribe|>
+        text = _re.sub(r'<[a-zA-Z/][^>]{0,30}>', '', text)  # stray HTML tags
+        text = text.strip()
+        
+        if not text:
+            if language == "ru":
+                await progress_msg.edit_text("🤔 Не удалось распознать речь.")
+            else:
+                await progress_msg.edit_text("🤔 Could not recognize speech.")
+            return
+        
         # Format result (without model info)
         model_used = usage.get("model", "unknown")  # For logging only
-        if language == "ru":
-            result_text = f"📝 <b>Распознанный текст:</b>\n\n{text}"
-        else:
-            result_text = f"📝 <b>Transcribed text:</b>\n\n{text}"
         
-        await progress_msg.edit_text(result_text)
+        # Display recognized text as plain text (no markdown conversion)
+        # to avoid double-escaping or showing HTML tags to the user
+        import html as _html
+        escaped_text = _html.escape(text)
+        if language == "ru":
+            result_text = f"📝 <b>Распознанный текст:</b>\n\n{escaped_text}"
+        else:
+            result_text = f"📝 <b>Transcribed text:</b>\n\n{escaped_text}"
+        
+        chunks = split_text_for_telegram(result_text)
+        
+        # Edit first chunk into progress message
+        try:
+            await progress_msg.edit_text(chunks[0], parse_mode="HTML")
+        except Exception:
+            try:
+                await progress_msg.edit_text(text[:4000])
+            except Exception:
+                pass
+        
+        # Send remaining chunks as new messages
+        for chunk in chunks[1:]:
+            try:
+                await message.answer(chunk, parse_mode="HTML")
+            except Exception:
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', chunk)
+                await message.answer(plain)
         
         # Increment usage and record
         await limit_service.increment_usage(user.id, RequestType.VOICE)
@@ -127,12 +490,75 @@ async def handle_voice_message(message: Message):
             text_length=len(text)
         )
         
-        # Auto-process with GPT if enabled
-        if auto_process and text.strip():
-            await _auto_process_transcribed_text(
+        # ============================================
+        # CHECK ACTIVE REDIS STATE FIRST
+        # If user is waiting for a prompt (video/image/animate etc.),
+        # use the transcribed text as that prompt directly.
+        # ============================================
+        current_state = await redis_client.get_user_state(user.id)
+        
+        if current_state and text.strip():
+            routed = await _route_voice_to_active_state(
                 message=message,
                 user_id=user.id,
-                text=text,
+                transcribed_text=text.strip(),
+                state=current_state,
+                language=language
+            )
+            if routed:
+                return
+        
+        # ============================================
+        # CHECK REPLY-TO-PHOTO (voice as reply to a photo message)
+        # If user replies to a photo with a voice message,
+        # treat it as photo edit instruction (like text reply-to-photo).
+        # ============================================
+        if message.reply_to_message and text.strip():
+            reply_msg = message.reply_to_message
+            if reply_msg.photo:
+                try:
+                    photo = reply_msg.photo[-1]
+                    file = await message.bot.get_file(photo.file_id)
+                    file_bytes_io = await message.bot.download_file(file.file_path)
+                    image_data = file_bytes_io.read() if hasattr(file_bytes_io, 'read') else file_bytes_io
+                    
+                    from bot.handlers.photo import _classify_photo_intent, _handle_photo_edit_from_bytes, _handle_photo_vision
+                    intent = await _classify_photo_intent(text.strip(), user.id)
+                    
+                    if intent == "EDIT":
+                        await _handle_photo_edit_from_bytes(
+                            message=message,
+                            user_id=user.id,
+                            image_data=image_data,
+                            caption=text.strip(),
+                            language=language
+                        )
+                    else:
+                        # Analyze the photo with the voice text as instruction
+                        from bot.handlers.document import analyze_document_with_vision
+                        analysis_progress = await message.answer(
+                            "🔍 Анализирую изображение..." if language == "ru" else "🔍 Analyzing image..."
+                        )
+                        await analyze_document_with_vision(
+                            message=message,
+                            progress_msg=analysis_progress,
+                            user_id=user.id,
+                            filename="photo.jpg",
+                            images=[image_data],
+                            language=language,
+                            caption=text.strip()
+                        )
+                    return
+                except Exception as e:
+                    logger.error("Voice reply-to-photo error", user_id=user.id, error=str(e))
+                    # Fall through to normal intent routing
+        
+        # Auto-process with voice intent routing if enabled
+        if auto_process and text.strip():
+            await _route_voice_intent(
+                message=message,
+                user_id=user.id,
+                transcribed_text=text,
                 language=language
             )
         
@@ -173,7 +599,8 @@ async def _auto_process_transcribed_text(
 ):
     """
     Auto-process transcribed text with AI.
-    Separate function to handle the GPT response generation.
+    Uses Responses API with web_search tool (model decides when to search).
+    Falls back to streaming chat completions if Responses API fails.
     """
     if language == "ru":
         processing_msg = await message.answer("💭 Обрабатываю ваш запрос...")
@@ -185,45 +612,93 @@ async def _auto_process_transcribed_text(
         context = await redis_client.get_context(user_id)
         
         # Build messages
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful AI assistant. Respond in the same language as the user's message. "
-                    "Be concise but thorough. Use markdown formatting when appropriate."
-                )
-            }
-        ]
+        system_prompt = (
+            "You are a helpful AI assistant in a Telegram bot. "
+            "Respond in the same language as the user's message. "
+            "Be concise but thorough. Use markdown formatting when appropriate.\n\n"
+            
+            "MEMORY: You DO have conversation memory within this chat session. "
+            "The previous messages in this conversation are provided to you as context. "
+            "If the user asks whether you remember previous messages — YES, you do, "
+            "refer to the conversation history above. "
+            "Context is kept for 30 minutes and up to 20 messages.\n\n"
+            
+            "WEB SEARCH: You have a web_search tool. Use it ONLY when the user asks about:\n"
+            "- Current events, news, prices, weather, exchange rates\n"
+            "- Real-time data, sports scores, stock prices\n"
+            "- Specific facts you are uncertain about\n"
+            "Do NOT use web search for:\n"
+            "- Greetings, casual conversation, jokes, small talk\n"
+            "- General knowledge questions you can answer confidently\n"
+            "- Creative tasks (writing, brainstorming, coding)\n"
+            "Do NOT fabricate facts — if truly unsure about factual claims, search first."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
         messages.extend(context)
         messages.append({"role": "user", "content": text})
         
-        # Stream response
+        # Try Responses API with web search first
         full_response = ""
-        last_update_len = 0
+        used_search = False
         
-        async for chunk, is_complete in ai_service.generate_text_stream(
-            messages=messages,
-            telegram_id=user_id
-        ):
-            full_response += chunk
+        try:
+            full_response, search_usage = await ai_service.generate_text_with_search(
+                messages=messages,
+                telegram_id=user_id,
+                enable_search=True,
+            )
+            used_search = search_usage.get("web_search_used", False)
             
-            # Update message every ~300 chars or on completion
-            if len(full_response) - last_update_len > 300 or is_complete:
-                try:
-                    display_text = full_response[:4000] if len(full_response) > 4000 else full_response
-                    if display_text.strip():
-                        await processing_msg.edit_text(display_text)
-                        last_update_len = len(full_response)
-                except Exception:
-                    pass
+            # Append source links
+            sources = search_usage.get("sources", [])
+            if sources:
+                import html as _html
+                source_links = "\n\n---\n🔗 "
+                source_links += " | ".join(
+                    f'<a href="{_html.escape(s["url"])}">{_html.escape(s.get("title", "Source")[:40])}</a>'
+                    for s in sources[:3]
+                )
+                full_response += source_links
+                
+        except Exception as search_err:
+            logger.warning("Voice auto-process: Responses API failed, falling back to streaming", error=str(search_err))
+            # Fallback to streaming
+            full_response = ""
+            last_update_len = 0
+            
+            async for chunk, is_complete in ai_service.generate_text_stream(
+                messages=messages,
+                telegram_id=user_id
+            ):
+                full_response += chunk
+                
+                if len(full_response) - last_update_len > 300 or is_complete:
+                    try:
+                        display_text = full_response[:4000] if len(full_response) > 4000 else full_response
+                        if display_text.strip():
+                            html_text = convert_markdown_to_html(display_text)
+                            try:
+                                await processing_msg.edit_text(html_text, parse_mode="HTML")
+                            except Exception:
+                                await processing_msg.edit_text(display_text)
+                            last_update_len = len(full_response)
+                    except Exception:
+                        pass
         
-        # Final update
+        # Final update — split long messages
         if full_response.strip():
+            # Store for download
+            await redis_client.set(f"user:{user_id}:last_response", full_response, ttl=3600)
+            
+            download_kb = get_download_keyboard(language)
+            
             try:
-                display_text = full_response[:4000]
-                if len(full_response) > 4000:
-                    display_text += "\n\n... (ответ обрезан)"
-                await processing_msg.edit_text(display_text)
+                await edit_or_send_long(
+                    thinking_message=processing_msg,
+                    original_message=message,
+                    text=full_response,
+                    reply_markup=download_kb
+                )
             except Exception:
                 pass
             
@@ -237,7 +712,8 @@ async def _auto_process_transcribed_text(
             logger.info(
                 "Auto-processed voice message",
                 user_id=user_id,
-                response_length=len(full_response)
+                response_length=len(full_response),
+                web_search_used=used_search
             )
         
     except Exception as e:
@@ -340,17 +816,47 @@ async def handle_audio_file(message: Message):
                 )
             return
         
+        # Clean Whisper special tokens and stray HTML-like tags
+        import re as _re2
+        text = _re2.sub(r'<\|[^>]*\|>', '', text)
+        text = _re2.sub(r'<[a-zA-Z/][^>]{0,30}>', '', text)
+        text = text.strip()
+        
         # Format result (without model info)
         if len(text) > 4000:
-            text = text[:4000] + "\n\n... (текст обрезан)"
+            # Send as file + first 4000 in message
+            await send_as_file(
+                message=message,
+                text=text,
+                filename=f"{filename}_transcription.txt",
+                caption="📝 Full transcription" if language != "ru" else "📝 Полная транскрипция"
+            )
         
         model_used = usage.get("model", "unknown")  # For logging only
-        if language == "ru":
-            result_text = f"📝 <b>Распознанный текст из {filename}:</b>\n\n{text}"
-        else:
-            result_text = f"📝 <b>Transcribed text from {filename}:</b>\n\n{text}"
         
-        await progress_msg.edit_text(result_text)
+        # Display recognized text as plain text (no markdown conversion)
+        import html as _html
+        escaped_text = _html.escape(text)
+        escaped_fname = _html.escape(filename)
+        if language == "ru":
+            result_text = f"📝 <b>Распознанный текст из {escaped_fname}:</b>\n\n{escaped_text}"
+        else:
+            result_text = f"📝 <b>Transcribed text from {escaped_fname}:</b>\n\n{escaped_text}"
+        
+        chunks = split_text_for_telegram(result_text)
+        
+        try:
+            await progress_msg.edit_text(chunks[0], parse_mode="HTML")
+        except Exception:
+            await progress_msg.edit_text(text[:4000])
+        
+        for chunk in chunks[1:]:
+            try:
+                await message.answer(chunk, parse_mode="HTML")
+            except Exception:
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', chunk)
+                await message.answer(plain[:4000])
         
         # Increment usage and record
         await limit_service.increment_usage(user.id, RequestType.VOICE)

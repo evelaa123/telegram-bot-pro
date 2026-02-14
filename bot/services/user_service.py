@@ -265,6 +265,133 @@ class UserService:
                 .values(last_active_at=datetime.utcnow())
             )
             await session.commit()
+    
+    # ============================================
+    # REFERRAL SYSTEM METHODS
+    # ============================================
+    
+    async def find_user_by_referral_code(self, code: str) -> Optional[User]:
+        """Find user by their referral code."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(User).where(User.referral_code == code)
+            )
+            return result.scalar_one_or_none()
+    
+    async def set_referral(self, telegram_id: int, referrer_telegram_id: int, referral_code: str) -> bool:
+        """Set the referrer for a user (only if not already set)."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                return False
+            
+            # Only set if not already referred
+            if user.referred_by:
+                return False
+            
+            user.referred_by = referrer_telegram_id
+            await session.commit()
+            
+            logger.info(
+                "Referral set",
+                user_id=telegram_id,
+                referrer_id=referrer_telegram_id
+            )
+            return True
+    
+    async def get_or_create_referral_code(self, telegram_id: int) -> Optional[str]:
+        """Get existing referral code or return None if not set."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(User.referral_code).where(User.telegram_id == telegram_id)
+            )
+            row = result.scalar_one_or_none()
+            return row
+    
+    async def save_referral_code(self, telegram_id: int, code: str) -> bool:
+        """Save a referral code for user."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                update(User)
+                .where(User.telegram_id == telegram_id)
+                .values(referral_code=code)
+            )
+            await session.commit()
+            return result.rowcount > 0
+    
+    async def get_referral_stats(self, telegram_id: int) -> Dict[str, Any]:
+        """Get referral statistics for a user."""
+        from sqlalchemy import func as sqlfunc
+        
+        async with async_session_maker() as session:
+            # Count invited users
+            count_result = await session.execute(
+                select(sqlfunc.count(User.id)).where(User.referred_by == telegram_id)
+            )
+            invited_count = count_result.scalar() or 0
+            
+            # Get total earnings
+            user_result = await session.execute(
+                select(User.referral_earnings).where(User.telegram_id == telegram_id)
+            )
+            total_earnings = float(user_result.scalar() or 0)
+            
+            return {
+                "invited_count": invited_count,
+                "total_earnings": total_earnings
+            }
+    
+    async def credit_referral_cashback(self, referred_telegram_id: int, payment_amount: float, cashback_percent: float = 15.0) -> Optional[float]:
+        """
+        Credit cashback to the referrer when a referred user makes a payment.
+        
+        Args:
+            referred_telegram_id: The user who made the payment
+            payment_amount: Amount paid
+            cashback_percent: Percentage to give to referrer (default 15%)
+            
+        Returns:
+            Cashback amount credited, or None if no referrer
+        """
+        from decimal import Decimal
+        
+        async with async_session_maker() as session:
+            # Find the referred user
+            result = await session.execute(
+                select(User).where(User.telegram_id == referred_telegram_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if not user or not user.referred_by:
+                return None
+            
+            # Find referrer
+            referrer_result = await session.execute(
+                select(User).where(User.telegram_id == user.referred_by)
+            )
+            referrer = referrer_result.scalar_one_or_none()
+            
+            if not referrer:
+                return None
+            
+            cashback = round(payment_amount * cashback_percent / 100, 2)
+            referrer.referral_earnings = Decimal(str(float(referrer.referral_earnings or 0) + cashback))
+            
+            await session.commit()
+            
+            logger.info(
+                "Referral cashback credited",
+                referrer_id=referrer.telegram_id,
+                referred_id=referred_telegram_id,
+                payment=payment_amount,
+                cashback=cashback
+            )
+            
+            return cashback
 
 
 # Global service instance

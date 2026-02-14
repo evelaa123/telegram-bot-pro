@@ -634,6 +634,122 @@ class CometAPIService:
             raise
     
     # =========================================
+    # Image Editing (GPT-Image-1 via chat.completions)
+    # =========================================
+    
+    async def edit_image(
+        self,
+        image_data: bytes,
+        prompt: str,
+        model: str = "gpt-image-1",
+        size: str = "auto",
+        quality: str = "auto"
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """
+        Edit an image using GPT-Image-1 via CometAPI chat.completions.
+        
+        Sends the image + text instruction, gets back an edited image.
+        
+        Args:
+            image_data: Original image bytes
+            prompt: Edit instruction (e.g. "Add a dent to the car on the logo")
+            model: Model to use (gpt-image-1, gpt-image-1.5)
+            size: Output size (auto, 1024x1024, 1536x1024, 1024x1536)
+            quality: Quality (auto, low, medium, high)
+            
+        Returns:
+            Tuple of (edited_image_bytes, usage_info)
+        """
+        try:
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+            
+            # Use the images.edit endpoint (OpenAI-compatible)
+            # CometAPI proxies this as OpenAI-compatible API
+            import io as _io
+            image_file = _io.BytesIO(image_data)
+            image_file.name = "input.png"
+            
+            response = await self.client.images.edit(
+                model=model,
+                image=image_file,
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                n=1
+            )
+            
+            if not response or not response.data:
+                raise Exception("No image data returned from edit API")
+            
+            result_data = response.data[0]
+            
+            # GPT-image models return base64 by default
+            if hasattr(result_data, 'b64_json') and result_data.b64_json:
+                edited_bytes = base64.b64decode(result_data.b64_json)
+            elif hasattr(result_data, 'url') and result_data.url:
+                edited_bytes = await self.download_image(result_data.url)
+            else:
+                raise Exception("No image URL or base64 data in edit response")
+            
+            # Cost estimate for gpt-image-1
+            cost = 0.02  # Rough estimate per edit
+            
+            usage = {
+                "model": model,
+                "size": size,
+                "quality": quality,
+                "cost_usd": Decimal(str(cost)),
+                "provider": "cometapi"
+            }
+            
+            # If response has usage info, use it
+            if hasattr(response, 'usage') and response.usage:
+                u = response.usage
+                input_tokens = getattr(u, 'input_tokens', 0) or getattr(u, 'prompt_tokens', 0) or 0
+                output_tokens = getattr(u, 'output_tokens', 0) or getattr(u, 'completion_tokens', 0) or 0
+                usage["input_tokens"] = input_tokens
+                usage["output_tokens"] = output_tokens
+                # Recalculate cost from tokens if available
+                if input_tokens or output_tokens:
+                    cost = (input_tokens / 1_000_000) * 8.0 + (output_tokens / 1_000_000) * 32.0
+                    usage["cost_usd"] = Decimal(str(round(cost, 6)))
+            
+            # Log API usage
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="image_edit",
+                    cost_usd=usage["cost_usd"],
+                    success=True
+                )
+            except Exception as log_error:
+                logger.warning("Failed to log API usage", error=str(log_error))
+            
+            logger.info(
+                "Image edit completed",
+                model=model,
+                result_size=len(edited_bytes)
+            )
+            
+            return edited_bytes, usage
+            
+        except Exception as e:
+            logger.error("CometAPI image edit error", error=str(e), model=model)
+            # Log failed call
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="image_edit",
+                    success=False,
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
+            raise
+    
+    # =========================================
     # Vision (Image Analysis)
     # =========================================
     
@@ -742,6 +858,200 @@ class CometAPIService:
             logger.error("CometAPI document analysis error", error=str(e))
             raise
     
+    # =========================================
+    # Text Generation with Web Search (Responses API)
+    # =========================================
+    
+    async def generate_text_with_search(
+        self,
+        messages: List[Dict[str, str]],
+        model: str = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        enable_search: bool = True,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate text using Responses API with optional web search.
+        
+        Uses /v1/responses endpoint which supports built-in tools
+        like web_search. The model automatically decides when to search.
+        
+        Args:
+            messages: Conversation messages (system + user + assistant)
+            model: Model name (default: qwen3-max-2026-01-23)
+            max_tokens: Max output tokens
+            temperature: Creativity
+            enable_search: Whether to enable web_search tool
+            
+        Returns:
+            Tuple of (response_text, usage_info)
+        """
+        model = model or "qwen3-max-2026-01-23"
+        api_key = getattr(settings, 'cometapi_api_key', None) or settings.openai_api_key
+        
+        try:
+            # Build the input for Responses API
+            # Convert chat messages format to Responses API format
+            input_items = []
+            for msg in messages:
+                role = msg["role"]
+                content = msg["content"]
+                if role == "system":
+                    # System messages become instructions in Responses API
+                    continue
+                input_items.append({
+                    "role": role,
+                    "content": content
+                })
+            
+            # Extract system message as instructions
+            instructions = None
+            for msg in messages:
+                if msg["role"] == "system":
+                    instructions = msg["content"]
+                    break
+            
+            # Build request body
+            body = {
+                "model": model,
+                "input": input_items,
+                "temperature": temperature,
+            }
+            
+            if instructions:
+                body["instructions"] = instructions
+            
+            if max_tokens:
+                body["max_output_tokens"] = max_tokens
+            
+            if enable_search:
+                body["tools"] = [{"type": "web_search"}]
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.BASE_URL}/responses",
+                    json=body,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.warning(
+                            "Responses API failed, falling back to chat completions",
+                            status=response.status,
+                            error=error_text[:200]
+                        )
+                        # Fall back to regular chat completions (no search)
+                        return await self.generate_text(
+                            messages=messages,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature
+                        )
+                    
+                    data = await response.json()
+            
+            # Extract text from response
+            output_text = ""
+            sources = []
+            
+            # Responses API returns output array
+            output = data.get("output", [])
+            if isinstance(output, list):
+                for item in output:
+                    if isinstance(item, dict):
+                        item_type = item.get("type", "")
+                        if item_type == "message":
+                            # Extract text from message content
+                            content_list = item.get("content", [])
+                            for c in content_list:
+                                if isinstance(c, dict) and c.get("type") == "output_text":
+                                    output_text += c.get("text", "")
+                                    # Extract source annotations
+                                    annotations = c.get("annotations", [])
+                                    for ann in annotations:
+                                        if isinstance(ann, dict) and ann.get("type") == "url_citation":
+                                            sources.append({
+                                                "url": ann.get("url", ""),
+                                                "title": ann.get("title", "")
+                                            })
+                        elif item_type == "web_search_call":
+                            logger.info("Web search was invoked by model")
+            elif isinstance(output, str):
+                output_text = output
+            
+            # Fallback: check output_text field directly
+            if not output_text:
+                output_text = data.get("output_text", "")
+            
+            if not output_text:
+                # Last resort: try to get from choices (chat completions format)
+                choices = data.get("choices", [])
+                if choices and isinstance(choices[0], dict):
+                    msg = choices[0].get("message", {})
+                    output_text = msg.get("content", "")
+            
+            if not output_text:
+                raise Exception("No text in Responses API output")
+            
+            # Parse usage
+            usage_data = data.get("usage", {})
+            input_tokens = usage_data.get("input_tokens", 0) or usage_data.get("prompt_tokens", 0) or 0
+            output_tokens = usage_data.get("output_tokens", 0) or usage_data.get("completion_tokens", 0) or 0
+            
+            # Calculate cost
+            pricing = self.PRICING.get(model, self.PRICING["qwen-3-max"])
+            cost = (
+                (input_tokens / 1000) * pricing.get("input", 0.002) +
+                (output_tokens / 1000) * pricing.get("output", 0.008)
+            )
+            
+            usage = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "model": model,
+                "provider": "cometapi",
+                "cost_usd": Decimal(str(round(cost, 6))),
+                "web_search_used": bool(sources),
+                "sources": sources[:5] if sources else [],
+            }
+            
+            # Log API usage
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="responses",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=usage["cost_usd"],
+                    success=True
+                )
+            except Exception as log_error:
+                logger.warning("Failed to log API usage", error=str(log_error))
+            
+            return output_text, usage
+            
+        except Exception as e:
+            if "falling back" not in str(e).lower():
+                logger.error("CometAPI Responses API error", error=str(e), model=model)
+            # Log failed call
+            try:
+                await usage_tracking_service.log_api_call(
+                    provider="cometapi",
+                    model=model,
+                    endpoint="responses",
+                    success=False,
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
+            raise
+
     # =========================================
     # Meeting Protocol Generation
     # =========================================

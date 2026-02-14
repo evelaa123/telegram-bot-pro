@@ -4,6 +4,7 @@ Handles all interactions with OpenAI APIs: GPT, DALL-E, Whisper, Sora.
 """
 import asyncio
 import io
+import base64
 from typing import Optional, AsyncGenerator, Dict, Any, List, Tuple
 from decimal import Decimal
 import aiohttp
@@ -196,6 +197,66 @@ class OpenAIService:
                 if response.status == 200:
                     return await response.read()
                 raise Exception(f"Failed to download image: {response.status}")
+    
+    async def edit_image(
+        self,
+        image_data: bytes,
+        prompt: str,
+        model: str = "gpt-image-1",
+        size: str = "auto",
+        quality: str = "auto"
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """
+        Edit an image using GPT-Image-1 via images.edit endpoint.
+        
+        Args:
+            image_data: Original image bytes
+            prompt: Edit instruction
+            model: gpt-image-1 or gpt-image-1.5
+            size: Output size
+            quality: Output quality
+            
+        Returns:
+            Tuple of (edited_image_bytes, usage_info)
+        """
+        try:
+            image_file = io.BytesIO(image_data)
+            image_file.name = "input.png"
+            
+            response = await self.client.images.edit(
+                model=model,
+                image=image_file,
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                n=1
+            )
+            
+            if not response or not response.data:
+                raise Exception("No image data returned from edit API")
+            
+            result_data = response.data[0]
+            
+            if hasattr(result_data, 'b64_json') and result_data.b64_json:
+                edited_bytes = base64.b64decode(result_data.b64_json)
+            elif hasattr(result_data, 'url') and result_data.url:
+                edited_bytes = await self.download_image(result_data.url)
+            else:
+                raise Exception("No image URL or base64 data in edit response")
+            
+            usage = {
+                "model": model,
+                "size": size,
+                "quality": quality,
+                "cost_usd": Decimal("0.02"),
+                "provider": "openai"
+            }
+            
+            return edited_bytes, usage
+            
+        except Exception as e:
+            logger.error("OpenAI image edit error", error=str(e), model=model)
+            raise
     
     # =========================================
     # Speech Recognition (Whisper)

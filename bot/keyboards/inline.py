@@ -108,6 +108,35 @@ def get_photo_actions_keyboard(
     )
     return builder.as_markup()
 
+
+def get_photo_edit_actions_keyboard(
+    language: str = "ru"
+) -> InlineKeyboardMarkup:
+    """Keyboard shown after photo editing — allows chained edits."""
+    texts = {
+        "ru": {
+            "edit_again": "✏️ Редактировать ещё",
+            "animate": "🎞 Оживить фото",
+        },
+        "en": {
+            "edit_again": "✏️ Edit Again",
+            "animate": "🎞 Animate Photo",
+        }
+    }
+    t = texts.get(language, texts["ru"])
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=t["edit_again"],
+            callback_data="photo:edit_again"
+        ),
+        InlineKeyboardButton(
+            text=t["animate"],
+            callback_data="photo:animate"
+        )
+    )
+    return builder.as_markup()
+
 def get_long_video_purchase_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
     """Keyboard for one-time long video purchase (not included in premium)."""
     texts = {
@@ -271,12 +300,14 @@ def get_document_actions_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
         "ru": {
             "summarize": "📝 Суммаризировать",
             "question": "❓ Задать вопрос",
-            "translate": "🌐 Перевести"
+            "translate": "🌐 Перевести",
+            "download": "📥 Скачать как файл"
         },
         "en": {
             "summarize": "📝 Summarize",
             "question": "❓ Ask Question",
-            "translate": "🌐 Translate"
+            "translate": "🌐 Translate",
+            "download": "📥 Download as File"
         }
     }
     
@@ -299,7 +330,43 @@ def get_document_actions_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
             callback_data="document:translate"
         )
     )
+    builder.row(
+        InlineKeyboardButton(
+            text=t["download"],
+            callback_data="text:download"
+        )
+    )
     
+    return builder.as_markup()
+
+
+def get_download_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
+    """
+    Get download-as-file keyboard with format choice (TXT / DOCX).
+    """
+    texts = {
+        "ru": {
+            "download_docx": "📥 Скачать .docx",
+            "download_txt": "📥 Скачать .txt",
+        },
+        "en": {
+            "download_docx": "📥 Download .docx",
+            "download_txt": "📥 Download .txt",
+        }
+    }
+    t = texts.get(language, texts["ru"])
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=t["download_docx"],
+            callback_data="text:download:docx"
+        ),
+        InlineKeyboardButton(
+            text=t["download_txt"],
+            callback_data="text:download:txt"
+        )
+    )
     return builder.as_markup()
 
 

@@ -49,6 +49,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="video", description="Генерация видео / Generate video"),
         BotCommand(command="limits", description="Мои лимиты / My limits"),
         BotCommand(command="settings", description="Настройки / Settings"),
+        BotCommand(command="referral", description="Реферальная программа / Referral program"),
     ]
     
     await bot.set_my_commands(commands)
